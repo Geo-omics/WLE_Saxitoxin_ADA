@@ -8,7 +8,7 @@ output: html_document
 
 Dependencies
 ```{r setup, include=FALSE}
-
+ 
 #rm(list=ls());if(is.null(dev.list()["RStudioGD"])){} else {dev.off(dev.list()["RStudioGD"])};cat("\014")
 library(tidyverse)
 library(dplyr)
