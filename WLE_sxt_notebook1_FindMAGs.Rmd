@@ -318,9 +318,6 @@ View(GLAMR_hits_raw_bin_passqc)
 GTDB_bac_ada <- gtdb %>% 
   filter(str_detect(classification, "d__Bacteria;p__Cyanobacteria;c__Cyanobacteriia;o__Cyanobacteriales;f__Nostocaceae")) # filter family of ADA clade
 
-#Get back to all checkM paths
-checkM
-
 #R combine GTDB filtered and checkM results
 GTDB_checkm_GLAMR_ada <- inner_join(checkM, GTDB_bac_ada, by = c("Bin Id" = "user_genome")) %>%
                               distinct(`Bin Id`, classification, Completeness, Contamination, `Strain heterogeneity`, .keep_all = TRUE)
@@ -328,25 +325,29 @@ GTDB_checkm_GLAMR_ada <- inner_join(checkM, GTDB_bac_ada, by = c("Bin Id" = "use
 #Filter GTDB_checkm_GLAMR_filter for CheckM quality
 GTDB_checkm_GLAMR_ada_passqc <- GTDB_checkm_GLAMR_ada %>% filter(Completeness >= 90 & Contamination <= 10)
 
+#Filter GTDB_checkm_GLAMR_filter for WLE samples
+WLE_GTDB_checkm_GLAMR_ada_passqc <- GTDB_checkm_GLAMR_ada_passqc %>%
+                                        rename("sample.x" = "SampleID") %>%
+                                        filter(SampleID %in% GLAMR_sample_table$SampleID)
+
 #Gather all read paths to ada bins to cluster by nucleotide similarity (remove similar bins), sym link to new path
-###read_paths_ada <- system("find /geomicro/data2/kiledal/GLAMR/data/omics/metagenomes/*/bins/all_raw_bins/ -path *.fa", intern=TRUE) %>% 
+read_paths_ada_redo <- system("find /geomicro/data2/kiledal/GLAMR/data/omics/metagenomes/*/bins/all_raw_bins/ -path *.fa", intern=TRUE) %>% 
           tibble(read_path = .) %>% 
           mutate(bin_id = read_path %>% str_remove(".*all_raw_bins/") %>% str_remove(".fa.*"),
                  sample = read_path %>% str_remove(".*metagenomes/") %>% str_remove("/bins.*"),
-                 new_path = str_glue("ada_bins/raw_bins/{bin_id}.fa")) %>%
-          filter(sample %in% GTDB_checkm_GLAMR_ada_passqc$sample.x &
-                 bin_id %in% GTDB_checkm_GLAMR_ada_passqc$`Bin Id`)
+                 new_path = str_glue("ada_bins_ada_redo/raw_bins_ada_redo/{bin_id}.fa")) %>%
+          filter(sample %in% WLE_GTDB_checkm_GLAMR_ada_passqc$SampleID &
+                 bin_id %in% WLE_GTDB_checkm_GLAMR_ada_passqc$`Bin Id`)
 
-###file.symlink(read_paths_ada$read_path, read_paths_ada$new_path) 
-#NOTE- NEVER FILTERED OUT NON-WLE BINS!
-          #For this study, only two MAGs from non-WLE sources were selected through drep, so I manually selected them out and reran.  
+file.symlink(read_paths_ada_redo$read_path, read_paths_ada_redo$new_path) 
+
 ```
 
-9.) drep ADA bins
+9.) drep ADA bins redo
 ```{bash}
 
 ###conda config --set channel_priority strict
-###snakemake run_ada_drep --profile config/snakemake_profiles/alpena/ --keep-going --dry-run
+snakemake run_ada_drep_ada_redo --profile config/snakemake_profiles/alpena/ --keep-going 
 
 ```
 
