@@ -1,0 +1,270 @@
+---
+title: "WLE Saxitoxin - Cleaned_up_notebook11b - Transcriptomics Sample Check"
+author: "Paul Den Uyl"
+date: "2024-05-10"
+output: html_document
+---
+
+Dependencies
+```{r setup, include=FALSE}
+
+#rm(list=ls());if(is.null(dev.list()["RStudioGD"])){} else {dev.off(dev.list()["RStudioGD"])};cat("\014")
+library(tidyverse)
+library(dplyr)
+library(here)
+library(vroom)
+library(ggmap)
+library(googledrive)
+library(readxl)
+library(Biostrings)
+library(lubridate)
+library(ggplot2)
+library(ggpmisc)
+knitr::opts_knit$set(root.dir = here::here("")) 
+
+#Load postgres server running on Alpena
+pg <- DBI::dbConnect(RPostgres::Postgres(),dbname = "XXX", host = "XXX", port = "XXX", user = "XXX", password = "XXX")
+
+#Load GLAMR GTDBTK data
+gtdb <- tbl(pg, "GTDB") %>% 
+  collect() %>% 
+  mutate(sample = str_extract(user_genome, "samp_\\d+")) %>% 
+  relocate(user_genome, sample) 
+
+#Load GLAMR CheckM data
+checkM <- tbl(pg, "checkm") %>% 
+  collect() %>% 
+  mutate(sample = str_extract(`Bin Id`, "samp_\\d+")) %>% 
+  relocate(`Bin Id`, sample)
+
+```
+
+-------------
+
+1.) General + assembly setup
+
+```{r}
+
+#Setup folder with sym links to all GLAMR sample assemblies of interest (for BLASTN analysis) 
+
+#Download most recent GLAMR sample table and process for only samples of interest (filtered by StudyID) 
+# Get latest table from google drive
+# Performed May 10, 2024
+##as_id("https://docs.google.com/spreadsheets/d/1z2IajV0Ay1lRjH9d0ibNBuf8PY0IbtEz/edit#gid=349037648") %>% 
+  ##drive_download("GLAMR_metadata/Great_Lakes_Omics_Datasets_May10_24.xlsx", overwrite = TRUE)
+
+GLAMR_table_import <- read_xlsx("data/Great_Lakes_Omics_Datasets_May10_24.xlsx", sheet = "samples") #Import GLAMR metadata
+
+GLAMR_sample_table <- GLAMR_table_import %>%
+  filter(
+    (geo_loc_name == "Lake Erie" | StudyID == "set_62") &   # Include samples from Lake Erie or StudyID set_62
+    sample_type == "metatranscriptome"                      # Include only metatranscriptome samples
+  )
+
+GLAMR_sample_table %>% distinct(SampleID) %>% count #215 Lake Erie metatranscriptome samples in GLAMR - May 10, 2024
+#MANY AREN't Ready for Analysis
+
+#Gather all read paths to megahit assemblies to process through BLASTN, sym link to new path
+metatranscriptome_read_paths <- system("ls /geomicro/data2/kiledal/GLAMR/data/omics/metatranscriptomes/*/reads/decon_*_reads_fastp.fastq.gz",intern = TRUE) %>% 
+    tibble(read_path = .) %>% 
+           mutate(sample = read_path %>% str_remove(".*metatranscriptomes/") %>% str_remove("/reads.*"),
+                  direction = read_path %>% str_remove(".*/decon_") %>% str_remove("_reads_fastp.*"),
+           new_path = str_glue("mapping/reads/GLAMR_metatranscriptomes_sxtAll_mm2/reads/{sample}_decon_{direction}_reads_fastp.fastq.gz")) %>% 
+           filter(sample %in% GLAMR_sample_table$SampleID)
+
+#symbolic link read_paths
+##file.symlink(metatranscriptome_read_paths$read_path, metatranscriptome_read_paths$new_path)
+
+```
+
+2.) Run snakemake 
+```{bash}
+
+snakemake run_read_mapping_GLAMR_metatranscriptomes_sxtAll_mm2 --profile config/snakemake_profiles/cayman/
+
+```
+
+3.) Determine contig and operon (subset) % id and coverage - minimap2 - updated Oct. 25, 2023
+```{r}
+
+# reference sequence import
+ref_seq <- Biostrings::readDNAStringSet("mapping/reads/GLAMR_metatranscriptomes_sxtAll_mm2/database/GLAMRsxtAll.fa") %>%
+    as.character() %>%
+    data.frame(ref_base = ., seqnames = names(.)) %>%
+    mutate(seq_length = nchar(ref_base)) %>%
+    separate_longer_position(ref_base, width = 1) %>%
+    group_by(seqnames) %>%
+    mutate(pos = row_number()) %>%
+    ungroup() 
+
+# function to generate bam stats - reference cover & % id
+bam_stats <- function(bam_path){
+
+  # read in bam file
+  bam <- Rsamtools::BamFile(file = bam_path,
+                            index = paste0(bam_path,".bai"))
+  
+  pileup_ref_join <- Rsamtools::pileup(bam,pileupParam = PileupParam(distinguish_strands = FALSE)) %>% 
+    full_join(ref_seq, ., by = c("seqnames", "pos"))  # join pileup file and alignment reference
+
+out_bp_depth <- pileup_ref_join %>%
+      group_by(seqnames, pos, seq_length) %>% 
+    arrange(seqnames, pos, desc(count)) %>% 
+      mutate(depth = sum(count),                          # alignment depth at each position
+             rel_abund_base = count/depth) %>%            # relative abundance of base read at position compared to all reads at position
+    group_by(seqnames) %>% 
+      mutate(bam_path = bam_path,
+             sample_id = bam_path %>% str_remove(".*bam/") %>% str_remove("_GLAMRsxtAll.*")) %>%
+    ungroup()
+
+out_percent_id <- out_bp_depth %>%
+      group_by(seqnames) %>%
+    filter(nucleotide == ref_base) %>%                    # only look at bases that match reference
+      mutate(percent_id_ref_contig = (sum(count) / sum(depth)) * 100) %>%    #all reads matching ref / total reads for sequence            
+    ungroup()
+
+out_cover <- out_bp_depth %>%
+  filter(count >= 1, na.rm = TRUE) %>%                   # keep only positions with at least 1 count
+  distinct(seqnames, pos, .keep_all = TRUE) %>%
+    group_by(seqnames) %>%
+      mutate(percent_cover = (n()/seq_length) * 100) %>%      # number of bases matching reference divided by reference sequence length 
+    ungroup()
+
+out <- left_join(out_percent_id, out_cover)  # merge %id and cover data tables
+}
+
+# create list of bam paths to process
+bam_paths <- system("ls mapping/reads/GLAMR_metatranscriptomes_sxtAll_mm2/output/bam/*.bam", intern = TRUE) %>%
+  tibble(bam_path = .) 
+
+# run for bam stats!
+##plan(multisession, workers = 8) #start multisession
+##GLAMR_metatranscriptome_bam_stats_mm2 <- future_map_dfr(bam_paths$bam_path, ~ bam_stats(.x), .progress = TRUE) # last run: Dec 09, 2023
+plan(sequential) #stop multisession
+
+#Remove rows with NA for 'percent_cover'
+GLAMR_metatranscriptome_bam_stats_mm2 <- GLAMR_metatranscriptome_bam_stats_mm2 %>% filter(!is.na(percent_cover))
+#write_csv(GLAMR_metatranscriptome_bam_stats_mm2, file = "mapping/reads/GLAMR_sxtAll_mm2/output/GLAMR_metatranscriptome_bam_stats_mm2.csv") # last run/save: May 13, 2024
+GLAMR_metatranscriptome_bam_stats_mm2 <- read_csv(file = "mapping/reads/GLAMR_sxtAll_mm2/output/GLAMR_metatranscriptome_bam_stats_mm2.csv", col_names = TRUE)
+
+# data table of samples with >60% cover for all three references GLAMR_bam_stats_60_cov_mm2
+GLAMR_metatranscriptome_bam_stats_60_cov_mm2 <- GLAMR_metatranscriptome_bam_stats_mm2 %>%
+    group_by(sample_id, seqnames) %>% 
+      select(seqnames, sample_id, percent_cover, percent_id_ref_contig) %>% # skim down data table to just data for each ref
+      distinct() %>%
+    group_by(sample_id) %>%
+      mutate(gene_present = percent_cover > 60,                       # does reference sequence have > 60% coverage?
+             all_present = all(gene_present)) %>%                     # do all three references have > 60% coverage?
+    subset(all_present == TRUE)                                       # keep only samples that have >60% coverage for all three references
+View(GLAMR_metatranscriptome_bam_stats_60_cov_mm2)
+
+# data table of samples with >60% cover for all three references, but coverage from references is combined (one combined reference)
+GLAMR_metatranscriptome_bam_stats_60_cov_comb_ref <- GLAMR_metatranscriptome_bam_stats_mm2 %>%
+    subset(sample_id %in% unique(GLAMR_metatranscriptome_bam_stats_60_cov_mm2$sample_id)) %>%    # subset only samples that have >60% cover for all three references
+    group_by(sample_id) %>%
+      mutate(seq_length_comb_ref = sum(unique(seq_length)),                        # sum unique reference lengths (each unique sequence) to get length of combined reference 
+             percent_cover_comb_ref = (sum(count>0) / seq_length_comb_ref) * 100,                      # number of bases matching combined reference divided by combined reference sequence length
+             percent_id_comb_ref = (sum(count) / sum(depth)) * 100) %>%            # all reads matching combined ref / total reads for combined ref sequence
+      reframe(                                                                     # skim down data table to just data for each sample
+        sample_id = unique(sample_id),
+        percent_cover_comb_ref = unique(percent_cover_comb_ref),
+        percent_id_comb_ref  = unique( percent_id_comb_ref))
+  
+View(GLAMR_metatranscriptome_bam_stats_60_cov_comb_ref)
+#Summary: 1 sample, all >99.8% combined ref ID - May 13, 2024
+
+#final step, format data table of samples with >60% cover for all three references: GLAMR_bam_stats_60_cov_mm2, and add to dataframe sxt_samps
+GLAMR_metatranscriptome_bam_stats_60_cov_mm2_PERCENT_COVER <- GLAMR_metatranscriptome_bam_stats_60_cov_mm2 %>% 
+                                                select(seqnames, sample_id, percent_cover) %>%
+                                                pivot_wider(names_from = seqnames, values_from = percent_cover) %>%
+                                                dplyr::rename(contig_220425_trim_percent_cover = samp_471_220425_trim,
+                                                              contig_266508_trim_percent_cover = samp_471_266508_trim,
+                                                              contig_36365_trim_percent_cover = samp_471_36365_trim)
+
+GLAMR_metatranscriptome_bam_stats_60_cov_mm2_PERCENT_ID <- GLAMR_metatranscriptome_bam_stats_60_cov_mm2 %>% 
+                                                select(seqnames, sample_id, percent_id_ref_contig) %>%
+                                                pivot_wider(names_from = seqnames, values_from = percent_id_ref_contig) %>%
+                                                dplyr::rename(contig_220425_trim_percent_id = samp_471_220425_trim,
+                                                              contig_266508_trim_percent_id = samp_471_266508_trim,
+                                                              contig_36365_trim_percent_id = samp_471_36365_trim)
+
+PERCENT_COV_ID_COMB <- left_join(GLAMR_metatranscriptome_bam_stats_60_cov_mm2_PERCENT_COVER, GLAMR_metatranscriptome_bam_stats_60_cov_mm2_PERCENT_ID, by = "sample_id")
+
+GLAMR_metatranscriptome_sample_table_sxt_samps_PERCENT_COVER_ID <-  left_join(GLAMR_metatranscriptome_bam_stats_60_cov_comb_ref, PERCENT_COV_ID_COMB, by = "sample_id") 
+
+#write_csv(file = "GLAMR_metadata/sxt_metatranscriptome_perCOV_perID_mm2.csv", x = GLAMR_metatranscriptome_sample_table_sxt_samps_PERCENT_COVER_ID)
+sxt_metatranscriptome_perCOV_perID_mm2 <- read_csv(file = "GLAMR_metadata/sxt_metatranscriptome_perCOV_perID_mm2.csv")
+
+```
+
+4.) Determine contig and operon (subset) % id and coverage - minimap2 - sxtX ONLY + sxtA (+) control
+```{r}
+
+# reference sequence import
+ref_seq <- Biostrings::readDNAStringSet("mapping/reads/GLAMR_metatranscriptomes_sxtXA_mm2/database/sxtXA.fasta") %>%
+    as.character() %>%
+    data.frame(ref_base = ., seqnames = names(.)) %>%
+    mutate(seq_length = nchar(ref_base)) %>%
+    separate_longer_position(ref_base, width = 1) %>%
+    group_by(seqnames) %>%
+    mutate(pos = row_number()) %>%
+    ungroup() 
+
+# function to generate bam stats - reference cover & % id
+bam_stats <- function(bam_path){
+
+  # read in bam file
+  bam <- Rsamtools::BamFile(file = bam_path,
+                            index = paste0(bam_path,".bai"))
+  
+  pileup_ref_join <- Rsamtools::pileup(bam,pileupParam = PileupParam(distinguish_strands = FALSE)) %>% 
+    full_join(ref_seq, ., by = c("seqnames", "pos"))  # join pileup file and alignment reference
+
+out_bp_depth <- pileup_ref_join %>%
+      group_by(seqnames, pos, seq_length) %>% 
+    arrange(seqnames, pos, desc(count)) %>% 
+      mutate(depth = sum(count),                          # alignment depth at each position
+             rel_abund_base = count/depth) %>%            # relative abundance of base read at position compared to all reads at position
+    group_by(seqnames) %>% 
+      mutate(bam_path = bam_path,
+             sample_id = bam_path %>% str_remove(".*bam/") %>% str_remove("_sxtXA.*")) %>%
+    ungroup()
+
+out_percent_id <- out_bp_depth %>%
+      group_by(seqnames) %>%
+    filter(nucleotide == ref_base) %>%                    # only look at bases that match reference
+      mutate(percent_id_ref_contig = (sum(count) / sum(depth)) * 100) %>%    #all reads matching ref / total reads for sequence            
+    ungroup()
+
+out_cover <- out_bp_depth %>%
+  filter(count >= 1, na.rm = TRUE) %>%                   # keep only positions with at least 1 count
+  distinct(seqnames, pos, .keep_all = TRUE) %>%
+    group_by(seqnames) %>%
+      mutate(percent_cover = (n()/seq_length) * 100) %>%      # number of bases matching reference divided by reference sequence length 
+    ungroup()
+
+out <- left_join(out_percent_id, out_cover)  # merge %id and cover data tables
+
+}
+
+# create list of bam paths to process
+bam_paths <- system("ls mapping/reads/GLAMR_metatranscriptomes_sxtXA_mm2/output/bam/*.bam", intern = TRUE) %>%
+  tibble(bam_path = .) 
+
+# run for bam stats!
+#plan(multisession, workers = 8) #start multisession
+##GLAMR_metatranscriptome_bam_XA_stats_mm2 <- future_map_dfr(bam_paths$bam_path, ~ bam_stats(.x), .progress = TRUE) # last run: Dec 09, 2023
+#plan(sequential) #stop multisession
+
+GLAMR_metatranscriptome_bam_XA_stats_mm2
+
+#Remove rows with NA for 'percent_cover'
+GLAMR_metatranscriptome_bam_XA_stats_mm2 <-GLAMR_metatranscriptome_bam_XA_stats_mm2 %>% filter(!is.na(percent_cover))
+write_csv(GLAMR_metatranscriptome_bam_XA_stats_mm2, file = "mapping/reads/GLAMR_metatranscriptomes_sxtXA_mm2/output/GLAMR_metatranscriptome_bam_XA_stats_mm2.csv") # last run/save: May 10, 2024
+GLAMR_metatranscriptome_bam_XA_stats_mm2  <- read_csv(file = "mapping/reads/GLAMR_metatranscriptomes_sxtXA_mm2/output/GLAMR_metatranscriptome_bam_XA_stats_mm2.csv", col_names = TRUE)
+
+unique(GLAMR_metatranscriptome_bam_XA_stats_mm2$seqnames)
+
+#no sxtX transcribed
+
+```
