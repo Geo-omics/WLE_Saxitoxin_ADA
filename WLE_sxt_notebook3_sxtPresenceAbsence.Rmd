@@ -97,7 +97,7 @@ View(blastn_GToTree_bins_results_vroom)
 #Identify samples by set (i.e. project) of interest in GLAMR - Western Lake Erie only
 StudyID_to_use_WLE <- c("set_17", "set_18", "set_35", "set_36", "set_38", "set_40", "set_41", "set_42", "set_46", "set_51", "set_56")
 
-GLAMR_table_import <- read_xlsx("GLAMR_metadata/Great_Lakes_Omics_Datasets_Oct27_23.xlsx", sheet = "samples") #Import GLAMR metadata
+GLAMR_table_import <- read_xlsx("data/Great_Lakes_Omics_Datasets_Oct27_23.xlsx", sheet = "samples") #Import GLAMR metadata
 ##
 #IMPORTANT NOTE
 ##
