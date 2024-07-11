@@ -1,0 +1,244 @@
+---
+title: "Heatmap of KEGG pathway completeness"
+author: "Paul Den Uyl"
+date: "2023-12-06"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+#rm(list=ls());if(is.null(dev.list()["RStudioGD"])){} else {dev.off(dev.list()["RStudioGD"])};cat("\014")
+library(tidyverse)
+library(dplyr)
+library(here)
+library(vroom)
+library(ggmap)
+library(googledrive)
+library(readxl)
+library(Biostrings)
+library(lubridate)
+library(ggplot2)
+library(ggpmisc)
+library(Rsamtools)
+library(ggnewscale)
+library(cowplot)
+library(furrr)
+library(patchwork)
+knitr::opts_knit$set(root.dir = here::here("")) 
+
+#Load postgres server running on Alpena
+pg <- DBI::dbConnect(RPostgres::Postgres(),dbname = "glamr_data", host = "localhost", port = "5432", user = "glamr_admin", password = "glamr2023")
+
+#Load GLAMR GTDBTK data
+gtdb <- tbl(pg, "GTDB") %>% 
+  collect() %>% 
+  mutate(sample = str_extract(user_genome, "samp_\\d+")) %>% 
+  relocate(user_genome, sample) 
+
+```
+
+***Code orignally sourced from Anders Kiledal***
+
+This notebook processes prodigal annotations of MAGs for input to BLAST/GHOSTkoala, which can subsequently be analyzed with KEGGdecoder.
+
+Protein sequences were annotated for each dereplicated MAG with prodigal. However, the headers for these files are messy and we want to concatenate the multiple files into one for easier submission to BLAST/GHOSTkoala. KEGGdecoder expects headers with the following format: MAG_aaID. It automatically determines groupings based on everything to the left of the '_'.
+
+This notebook processes prodigal annotations of MAGs for input to BLAST/GHOSTkoala, which can subsequently be analyzed with KEGGdecoder.
+
+Protein sequences were annotated for each dereplicated MAG with prodigal. However, the headers for these files are messy and we want to concatenate the multiple files into one for easier submission to BLAST/GHOSTkoala. KEGGdecoder expects headers with the following format: MAG_aaID. It automatically determines groupings based on everything to the left of the '_'.
+
+Run prodigal on all MAGs
+```{bash}
+
+### conda config --set channel_priority strict
+### snakemake run_prodigal_mags --profile config/snakemake_profiles/cayman --rerun-incomplete --dry-run 
+
+#prodigal results in /geomicro/data2/pdenuyl2/neurotoxin_thesis/FINAL2/prodigal/
+
+```
+
+Run kofam_scan on all MAGs w/prodigal .faa output
+```{bash}
+
+### conda config --set channel_priority strict
+### snakemake run_kofam_scan --profile config/snakemake_profiles/cayman --rerun-incomplete --dry-run 
+
+#kofam_scan results in /geomicro/data2/pdenuyl2/neurotoxin_thesis/FINAL2/kofam_scan/
+
+```
+
+Read in amino acid fasta files and update header
+```{r}
+
+amino_acid_fastas <- list.files("prodigal", pattern = "*.faa", full.names = TRUE)
+
+mag_list <- amino_acid_fastas %>%
+                    str_remove("prodigal/") %>%
+                    str_remove(".faa")
+bin_list <- mag_list %>%
+                    str_remove("_refine.*")
+
+mag_tax <- gtdb %>% 
+              filter(user_genome %in% bin_list) %>%
+              distinct()
+
+kofamscan_res <- system("ls kofam_scan/*_kofam_results.txt", intern = TRUE) %>%
+  data.frame(path = .) %>%
+  bind_cols(.,unglue::unglue_data(.$path, "kofam_scan/{mag}_kofam_results.txt")) %>%
+  bind_cols(.,map_df(.$path, file.info)) #%>%
+  #filter(mtime > lubridate::mdy("05/01/2023"))
+
+kegg_hits <- map_df(kofamscan_res$path, ~read_tsv(.x) %>% mutate(path=.x), show_col_types=FALSE) %>%
+  dplyr::rename(sig_nf="#") %>%
+  filter(sig_nf=="*") %>%
+  left_join(kofamscan_res) %>%
+  group_by(mag) %>%
+  mutate(#mag=str_replace_all(mag, "_", "-"),
+         genenumber=row_number(),
+         bin=str_glue("{mag}_{genenumber}")) %>%
+  ungroup() %>%                                      #ungroup to prevent "mag" from being readded in next step
+  select(mag, bin, KO)
+
+```
+
+Run KEGGdecoder on all MAGs w/kofam_scan output (post editing in R)
+```{bash}
+
+### conda config --set channel_priority strict
+### snakemake run_KEGGdecoder_bins --profile config/snakemake_profiles/cayman --rerun-incomplete --dry-run 
+
+#kegg decoder results in /geomicro/data2/pdenuyl2/neurotoxin_thesis/FINAL2/keggdec/output
+
+```
+
+Process KEGGdecoder output
+```{r}
+
+for(i in mag_list) {
+  kegg_hits %>%
+    filter(mag == i) %>%
+    select(-mag) %>%
+    write_tsv(str_glue("keggdec/input/{i}_keggdec_input.tsv"))
+}
+
+mag_map <- data.frame(mag_fp = amino_acid_fastas) %>% 
+  mutate(old_bin_name = str_remove(mag_fp,"prodigal/") %>% str_remove(".faa") %>% str_remove("_refine.*"),
+         old_mag_name = str_remove(mag_fp,"prodigal/") %>% str_remove(".faa"),
+         kegg_decoder_name = glue::glue("MAG{row_number()}")) %>% 
+  left_join(mag_tax %>% dplyr::select(user_genome, classification),by = c("old_bin_name" = "user_genome")) %>% 
+  left_join(kegg_hits, by = c("old_mag_name" = "mag")) 
+
+write_tsv(mag_map, "keggdec/mag_map.tsv")
+
+```
+
+Nicer KEGGdecoder figure
+```{r}
+
+kegg_decoder_data_rbind <- tibble()
+
+for(i in mag_list) {
+
+filepath <- paste0("keggdec/output/", i, "_kegg_decoder_list.txt")
+  kegg_decoder_data <- read_tsv(filepath) %>% 
+  dplyr::rename(kegg_decoder_name = "Function") %>% 
+  #left_join(mag_map %>% dplyr::select(kegg_decoder_name, bin, classification)) %>%
+  #relocate(kegg_decoder_name, bin, classification) %>%
+    filter(kegg_decoder_name != "bin") %>%
+    mutate(kegg_decoder_name = ifelse(kegg_decoder_name == "samp", i, kegg_decoder_name))
+
+kegg_decoder_data_rbind <- rbind(kegg_decoder_data_rbind, kegg_decoder_data)
+  }
+
+MAG_names <- c("LE20-WE8", "LE17-WE2", "LE17-WE12", "LE20-WE12", "LE21-WE12", "LE22-WE12", "LE21-ER30", "LE16-WE8", "LE19-WE12", "LE20-WE2-Aug", "LE20-WE2-Sep")
+kegg_decoder_name_order <- c("samp_471_concoct_280_refine_FINAL2-contigs", "samp_2073_semibin_92", "samp_3937_concoct_558", "samp_4344_concoct_197", "samp_507_semibin_387_refine_FINAL2-contigs", "samp_4380_VAMB_181_refine_FINAL2-contigs", "samp_4305_concoct_92_refine_FINAL2-contigs", "samp_2059_VAMB_27", "samp_468_metabat2_39", "samp_477_concoct_589", "samp_481_concoct_764_refine_FINAL2-contigs")
+
+kegg_decoder_data_rbind_sort <- kegg_decoder_data_rbind %>%
+                                              arrange(match(kegg_decoder_name, kegg_decoder_name_order)) %>%
+                                              mutate(bin_num = row_number(),
+                                                     bin = str_remove(kegg_decoder_name, "_refine_FINAL2-contigs")) %>%
+                                              cbind(MAG_names)
+
+groupings <- read_tsv("keggdec/groupings_PD_edit_Dec19_23.txt")
+new_terms <- read_tsv("keggdec/new_terms_Dec19_23.tsv")
+
+groupings_w_new_terms <- left_join(groupings, new_terms, by = "term") #make formatting for terms consistent, import and replace with new_terms
+
+kegg_decoder_long_anti <- kegg_decoder_data_rbind %>% 
+  pivot_longer(-c("kegg_decoder_name"),#"bin",)
+               names_to = "term",values_to = "completion") %>% 
+               anti_join(groupings_w_new_terms)
+
+kegg_decoder_long <- kegg_decoder_data_rbind_sort %>% 
+  pivot_longer(-c("kegg_decoder_name", "bin_num", "bin", "MAG_names"),
+               names_to = "term",values_to = "completion") %>% 
+  left_join(groupings) %>% 
+  filter(!is.na(group)) %>% 
+  mutate(completion = if_else(is.na(completion),0,completion))
+
+
+kegg_decoder_long_full <- left_join(kegg_decoder_long, groupings_w_new_terms, by = c("term", "group_order", "group")) %>%
+                              select(-term, term = new_term)
+                              
+write_tsv(kegg_decoder_long_full, "keggdec/kegg_decoder_long.tsv")
+
+#if all MAGs have 0 for pathway, remove
+#
+term_sums <- kegg_decoder_long_full %>%
+    group_by(term) %>%
+    summarize(sum_completion = sum(completion))
+
+filtered_terms_KEEP <- term_sums %>%
+  filter(sum_completion != 0) %>%
+  pull(term)
+##
+
+filtered_kegg_decoder <- kegg_decoder_long_full %>%
+  filter(term %in% filtered_terms_KEEP)
+
+
+colors <- pals::cols25()
+
+#non-filtered
+kegg_decoder_long <- kegg_decoder_long_full
+#filtered
+#kegg_decoder_long <- filtered_kegg_decoder
+
+group_bar_left <- kegg_decoder_long %>% ggplot(aes(0,reorder(term,-group_order),fill=factor(group,levels = unique(groupings$group), ordered = TRUE))) + 
+  geom_tile(color = "black",show.legend = FALSE) +
+  scale_fill_manual(values = colors) +
+  scale_x_discrete(expand = c(0,0)) +
+  theme_void() 
+  #theme(legend.position = "none") 
+
+group_bar_right <- kegg_decoder_long %>% ggplot(aes(0,reorder(term,-group_order),fill=factor(group,levels = unique(groupings$group), ordered = TRUE))) + 
+  geom_tile(color = "black") +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) +
+  scale_y_discrete(position = "right", expand = c(0,0)) +
+  scale_x_discrete(expand = c(0,0)) +
+  scale_fill_manual(values = colors) +
+  labs(x = NULL,
+       y = NULL,
+       fill = "") 
+
+heatmap <- kegg_decoder_long %>% ggplot(aes(reorder(MAG_names, bin_num),reorder(term,-group_order),fill=completion, label = bin_num)) + 
+  geom_tile(color = "grey50") +
+  geom_text(alpha = 0.6, size = 2.25,color = "white") +
+  scale_fill_gradient(low = "white",high = "darkblue")+
+  theme_bw() +
+  #scale_y_discrete(position = "right") +
+  labs(x = NULL, 
+       y= NULL,
+       fill = "Completeness") +
+  #theme_void() +
+  #cowplot::theme_nothing() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()) #+
+  #scale_x_continuous(expand=c(0,0),breaks = scales::pretty_breaks(n = nrow(kegg_decoder_data_rbind))) 
+
+(combined <- guide_area() + group_bar_left + heatmap + group_bar_right + plot_layout(widths = c(0.4,0.01,0.98,0.01),guides = "collect") & theme(plot.margin = unit(c(0, 0, 0, 0), "null"),panel.spacing = unit(c(0, 0, 0, 0), "null"), legend.position = "left"))
+ggsave(plot = combined,"notebook_pdf/MAG_kegg_v7.pdf", width = 6, height = 7, dpi = 300, scale = 2)
+
+```
+
