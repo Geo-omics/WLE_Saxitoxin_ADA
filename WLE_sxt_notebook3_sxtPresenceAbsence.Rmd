@@ -239,7 +239,7 @@ View(GLAMR_bam_stats_60_cov_comb_ref)
 ########################################################################################
 #ADDS samp_4333 metadata (date)
 
-GLAMR_sample_table_Dec9_23 <- read_xlsx("GLAMR_metadata/Great_Lakes_Omics_Datasets_Dec9_23_notebook3bONLY.xlsx", sheet = "samples") #Import GLAMR metadata
+GLAMR_sample_table_Dec9_23 <- read_xlsx("data/Great_Lakes_Omics_Datasets_Dec9_23_notebook3bONLY.xlsx", sheet = "samples") #Import GLAMR metadata
 
 GLAMR_sample_table_sample_id_Dec9_23 <- GLAMR_sample_table_Dec9_23 %>% rename("SampleID" = "sample_id")
 GLAMR_sample_table_sxt_samps_left <- left_join(GLAMR_bam_stats_60_cov_comb_ref, GLAMR_sample_table_sample_id_Dec9_23, by = "sample_id") %>%
@@ -268,7 +268,7 @@ PERCENT_COV_ID_COMB <- left_join(GLAMR_bam_stats_60_cov_mm2_PERCENT_COVER, GLAMR
 
 GLAMR_sample_table_sxt_samps_left_PERCENT_COVER_ID <-  left_join(GLAMR_sample_table_sxt_samps_left, PERCENT_COV_ID_COMB, by = "sample_id") 
 
-#write_csv(file = "GLAMR_metadata/sxt_perCOV_perID_mm2.csv", x = GLAMR_sample_table_sxt_samps_left_PERCENT_COVER_ID)
+#write_csv(file = "data/sxt_perCOV_perID_mm2.csv", x = GLAMR_sample_table_sxt_samps_left_PERCENT_COVER_ID)
 
 ```
 
