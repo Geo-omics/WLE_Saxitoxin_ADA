@@ -1,0 +1,380 @@
+---
+title: "WLE Saxitoxin- Cleaned_up_notebook8b - qPCR facts"
+author: "Paul Den Uyl"
+date: "2024-02-22"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+#rm(list=ls());if(is.null(dev.list()["RStudioGD"])){} else {dev.off(dev.list()["RStudioGD"])};cat("\014")
+library(tidyverse)
+library(dplyr)
+library(here)
+library(vroom)
+library(ggmap)
+library(googledrive)
+library(readxl)
+library(Biostrings)
+library(lubridate)
+library(ggplot2)
+library(ggpmisc)
+knitr::opts_knit$set(root.dir = here::here("")) 
+
+```
+
+Import data
+```{r, import qPCR and GLAMR data}
+
+#Import qPCR data from Casey/Rao
+CIGLR_qPCR_df <- read_csv("data/Joined_qPCR_and_Water_Quality_data.csv",na="NA",show_col_types = FALSE) %>%
+                  mutate(Date = str_remove(Date, "T.*"),                   #take time off Date column
+                         sxtA_Copies_Rxn = as.numeric(sxtA_Copies_Rxn),    #convert column to numeric 
+                         date_site = paste0(Date, "_", Site))              #make new column to compare with GLAMR_sample_table 
+
+#Load GLAMR data - from notebook1b (April 25,2024)
+###########################
+#Identify samples by set (i.e. project) of interest in GLAMR - Western Lake Erie only
+StudyID_to_use_WLE <- c("set_17", "set_18", "set_35", "set_36", "set_38", "set_40", "set_41", "set_42", "set_46", "set_51", "set_56")
+
+GLAMR_table_import <- read_xlsx("data/Great_Lakes_Omics_Datasets_Oct27_23.xlsx", sheet = "samples") #Import GLAMR metadata
+
+GLAMR_sample_table <- GLAMR_table_import %>% 
+                              mutate(geo_loc_name = if_else(SampleID == "samp_4333", 
+                                                            "Lake Erie", geo_loc_name), #change geo_loc_name from NA to Lake Erie for samp_4333 (KEEP!)
+                                                            collection_date = str_remove(collection_date, "T.*"),                       
+                                                            date_site = paste0(collection_date, "_", NOAA_Site)) %>%              
+                              filter(StudyID %in% StudyID_to_use_WLE,                                    #include only StudyID of interest (WLE)
+                              sample_type == "metagenome",                                               #include only data type of interest (metagenome)
+                              !(is.na(NOAA_Site) & is.na(geo_loc_name)),                                 #remove samples without NOAA_Site and geo_loc_name
+                              !(NOAA_Site %in% c("NA", "NF") & geo_loc_name %in% c("NA", "NF")),         #remove samples without NOAA_Site and geo_loc_name
+                              !grepl("SB.*", NOAA_Site),                                                 #remove samples from Sag. Bay
+                              SampleID != "samp_4304")                                                   #remove sample from Thames River
+
+GLAMR_sample_table %>% distinct(SampleID) %>% count #570 WLE metagenome samples in GLAMR - October 27, 2023
+#End notebook1b code
+
+```
+
+Combine qPCR and metagenomic data tables
+```{r}
+
+############################
+#Slim down GLAMR data frame#
+############################
+GLAMR_sample_table_slim <- GLAMR_sample_table %>%
+                            dplyr::select(SampleID, lat, lon, collection_date, NOAA_Site, date_site) 
+
+#Add same date_site column to CIGLR_qPCR_df 
+CIGLR_qPCR_df_slim <- CIGLR_qPCR_df %>%
+                      filter(!is.na(sxtA_Rep)) %>%                                             #remove samples without sxtA run (rep)
+                      rename("Sample_ID" = "SampleID_qPCR",                                    #rename to better distinguish from GLAMR Date
+                             "Latitude_decimal_deg" = "Latitude_decimal_deg_qPCR",
+                             "Longitude_decimal_deg" = "Longitude_decimal_deg_qPCR",
+                             "Date" = "Date_qPCR",
+                             "Site" = "Site_qPCR") %>%                                
+                      dplyr::select(SampleID_qPCR, Latitude_decimal_deg_qPCR, Longitude_decimal_deg_qPCR, Date_qPCR, Site_qPCR, sxtA_Rep, sxtA_Copies_Rxn, sxtA_Copies_mL, sxtA_Copies_mL_BDL_Replaced, date_site)                       #select relevant columns
+
+#Merge CIGLR_qPCR and GLAMR samples that share the same date and site (comparable samples)
+CIGLR_qPCR_GLAMR_merge_v1 <- left_join(CIGLR_qPCR_df_slim, GLAMR_sample_table_slim, by = "date_site")
+#Looks good, let's sort and cleanup
+
+CIGLR_qPCR_GLAMR_merge_v2 <- CIGLR_qPCR_GLAMR_merge_v1 %>%
+                              filter(!is.na(SampleID)) %>%                                     #remove samples without metagenomic data
+                              mutate(same_date = collection_date == Date_qPCR,
+                                     lat = as.numeric(lat),
+                                     lon = as.numeric(lon),
+                                     lon = as.numeric(Latitude_decimal_deg_qPCR),
+                                     lon = as.numeric(Longitude_decimal_deg_qPCR),
+                                     close_lat = lat - Latitude_decimal_deg_qPCR < 0.01,
+                                     close_lon = lon - Longitude_decimal_deg_qPCR < 0.01, 
+                                     same_site = NOAA_Site == Site_qPCR) %>%
+                              dplyr::select(SampleID, date_site, collection_date, same_date, Date_qPCR, lat, Latitude_decimal_deg_qPCR, close_lat, lon, Longitude_decimal_deg_qPCR, close_lon, NOAA_Site, Site_qPCR, same_site, sxtA_Copies_Rxn, sxtA_Copies_mL, sxtA_Copies_mL_BDL_Replaced)
+
+CIGLR_qPCR_GLAMR_merge_v2 %>%
+  filter(same_date == FALSE |
+         close_lat == FALSE |
+         close_lon == FALSE |
+         same_site == FALSE)
+
+#clean up v2 some more 
+CIGLR_qPCR_GLAMR_merge_v3 <- CIGLR_qPCR_GLAMR_merge_v2 %>%
+                              mutate(lat = if_else(is.na(lat), Latitude_decimal_deg_qPCR, lat),
+                                     lon = if_else(is.na(lon), Longitude_decimal_deg_qPCR, lon)) %>%
+                              dplyr::select(SampleID, date_site, lat, lon, sxtA_Copies_Rxn, sxtA_Copies_mL, sxtA_Copies_mL_BDL_Replaced) 
+
+```
+
+Basic qPCR stats 
+```{r, basic qPCR stats}
+
+#Distinct date counts (qPCR)
+qPCR_date <- CIGLR_qPCR_df %>%
+            filter(!is.na(sxtA_Rep)) %>%                        #Remove samples without sxtA run (rep)
+            arrange(desc(sxtA_Copies_Rxn)) %>%                  #Arrange by sxtA_Copies_Rxn for visual analysis
+            distinct(Date, .keep_all = TRUE)                    #Keep only one unique date for each sxtA detection
+                                                                #76 dates where qPCR run 
+#View(qPCR_date %>%
+#       dplyr::select(Date, sxtA_Rep, sxtA_Copies_Rxn, sxtA_Copies_mL_BDL_Replaced))
+dim(qPCR_date)
+
+#Distinct date detects (qPCR)
+qPCR_dateDetect <- CIGLR_qPCR_df %>%                                
+                filter(sxtA_Copies_Rxn>=45) %>%                 
+                arrange(desc(sxtA_Copies_Rxn)) %>%              #Arrange by sxtA_Copies_Rxn for visual analysis
+                distinct(Date, .keep_all = TRUE)                #Keep only one unique date for each sxtA detection
+                                                                #47 dates where sxt qPCR above detection 
+#View(qPCR_detect %>%
+#       dplyr::select(Date, sxtA_Rep, sxtA_Copies_Rxn, sxtA_Copies_mL_BDL_Replaced))
+dim(qPCR_dateDetect)
+
+#Distinct sample counts (qPCR)
+qPCR_run <- CIGLR_qPCR_df %>%
+            filter(!is.na(sxtA_Rep)) %>%                        #Remove samples without sxtA run (rep)
+            arrange(desc(sxtA_Copies_Rxn)) %>%                  #Arrange by sxtA_Copies_Rxn for visual analysis
+            distinct(Sample_ID, .keep_all = TRUE)               #Keep only one unique sample for each sxtA reaction
+                                                                #411 samples where qPCR run
+#View(qPCR_run %>%
+#       dplyr::select(Date, Site, Sample_ID, sxtA_Rep, sxtA_Copies_Rxn, sxtA_Copies_mL_BDL_Replaced))
+dim(qPCR_run)
+
+#Distinct sample detects (qPCR)
+qPCR_runDetect <- CIGLR_qPCR_df %>%                                
+                filter(sxtA_Copies_Rxn>=45) %>%                 
+                arrange(desc(sxtA_Copies_Rxn)) %>%              #Arrange by sxtA_Copies_Rxn for visual analysis
+                distinct(Sample_ID, .keep_all = TRUE)           #Keep only one unique sample for each sxtA detection
+                                                                #136 samples where sxt qPCR above detection 
+
+#Count number of stations above detection (sxtA_Copies_Rxn>=45)
+qPCR_runDetect_stations <- qPCR_runDetect %>%
+                                group_by(Site) %>%
+                                count() %>%
+                                dplyr::rename(detects = n)
+
+#Count number of stations TOTAL
+qPCR_runAll_stations <-qPCR_run %>%
+                            group_by(Site) %>%
+                            count() %>%
+                            dplyr::rename(run = n)
+
+qPCR_runDetect_stations
+qPCR_runAll_stations
+
+qPCR_stationRatios <- merge(qPCR_runDetect_stations, qPCR_runAll_stations, by = "Site") %>%
+                              mutate(ratio = detects/run)
+
+#View(qPCR_runDetect %>%
+#       dplyr::select(Date, Site, Sample_ID, sxtA_Rep, sxtA_Copies_Rxn, sxtA_Copies_mL_BDL_Replaced))
+dim(qPCR_runDetect)
+
+#Maximum sxtA_Copies_mL
+max_sxtA_Copies_mL <- CIGLR_qPCR_df$sxtA_Copies_mL %>%
+                        as.numeric() %>%
+                        round() %>%
+                        max(na.rm = TRUE)                  #10,662 copies/mL
+#note Nauman/Chaffin's highest value: 41,536 gc/mL copies/mL
+#There was a weak but significant correlation between sxtA gene copies and water temperature (p = 0.027; r = 0.263) and no other variables including cyanobacterial biovolumes correlated with sxtA (ESM Table S1).
+
+```
+
+Basic metagenomic stats - sxtA ONLY
+```{r}
+
+#Determine contig and operon (subset) % id and coverage - minimap2 - updated from notebook3b (updated Oct. 25, 2023)
+
+#sxtA reference sequence import
+ref_seq <- Biostrings::readDNAStringSet("mapping/reads/GLAMR_sxtA_mm2/database/LE20WE8sxtA.fa") %>%
+    as.character() %>%
+    data.frame(ref_base = ., seqnames = names(.)) %>%
+    mutate(seq_length = nchar(ref_base)) %>%
+    separate_longer_position(ref_base, width = 1) %>%
+    group_by(seqnames) %>%
+    mutate(pos = row_number()) %>%
+    ungroup() 
+
+# function to generate bam stats - reference cover & % id
+bam_stats <- function(bam_path){
+
+  # read in bam file
+  bam <- Rsamtools::BamFile(file = bam_path,
+                            index = paste0(bam_path,".bai"))
+  
+  pileup_ref_join <- Rsamtools::pileup(bam,pileupParam = PileupParam(distinguish_strands = FALSE)) %>% 
+    full_join(ref_seq, ., by = c("seqnames", "pos"))  # join pileup file and alignment reference
+
+out_bp_depth <- pileup_ref_join %>%
+      group_by(seqnames, pos, seq_length) %>% 
+    arrange(seqnames, pos, desc(count)) %>% 
+      mutate(depth = sum(count),                          # alignment depth at each position
+             rel_abund_base = count/depth) %>%            # relative abundance of base read at position compared to all reads at position
+    group_by(seqnames) %>% 
+      mutate(bam_path = bam_path,
+             sample_id = bam_path %>% str_remove(".*bam/") %>% str_remove("_LE20WE8sxtA.*")) %>%
+    ungroup()
+
+out_percent_id <- out_bp_depth %>%
+      group_by(seqnames) %>%
+    filter(nucleotide == ref_base) %>%                    # only look at bases that match reference
+      mutate(percent_id_ref_contig = (sum(count) / sum(depth)) * 100) %>%    #all reads matching ref / total reads for sequence            
+    ungroup()
+
+out_cover <- out_bp_depth %>%
+  filter(count >= 1, na.rm = TRUE) %>%                   # keep only positions with at least 1 count
+  distinct(seqnames, pos, .keep_all = TRUE) %>%
+    group_by(seqnames) %>%
+      mutate(percent_cover = (n()/seq_length) * 100) %>%      # number of bases matching reference divided by reference sequence length 
+    ungroup()
+
+out <- left_join(out_percent_id, out_cover)  # merge %id and cover data tables
+
+}
+
+# create list of bam paths to process
+bam_paths <- system("ls mapping/reads/GLAMR_sxtA_mm2/output/bam/*.bam", intern = TRUE) %>%
+  tibble(bam_path = .) 
+
+# run for bam stats!
+#plan(multisession, workers = 8) #start multisession
+#GLAMR_bam_stats_sxtA_mm2 <- future_map_dfr(bam_paths$bam_path, ~ bam_stats(.x), .progress = TRUE) # last run: May 7, 2024
+#plan(sequential) #stop multisession
+
+#Remove rows with NA for 'percent_cover'
+#GLAMR_bam_stats_sxtA_mm2 <-GLAMR_bam_stats_sxtA_mm2 %>% filter(!is.na(percent_cover))
+#write_csv(GLAMR_bam_stats_sxtA_mm2, file = "mapping/reads/GLAMR_sxtA_mm2/output/GLAMR_bam_stats_sxtA_mm2.csv") # last run/save: May 7, 2024
+GLAMR_bam_stats_sxtA_mm2 <- read_csv(file = "mapping/reads/GLAMR_sxtA_mm2/output/GLAMR_bam_stats_sxtA_mm2.csv", col_names = TRUE)
+
+# data table of samples with >60% cover for sxtA reference, GLAMR_bam_stats_60_sxtA_cov_mm2
+GLAMR_bam_stats_60_sxtA_cov_mm2 <- GLAMR_bam_stats_sxtA_mm2 %>%
+    group_by(sample_id, seqnames) %>% 
+      select(seqnames, sample_id, percent_cover, percent_id_ref_contig) %>% # skim down data table to just data for each ref
+      distinct() %>%
+    group_by(sample_id) %>%
+      mutate(gene_present = percent_cover > 60,                       # does reference sequence have > 60% coverage?
+             all_present = all(gene_present)) %>%                     # do all three references have > 60% coverage?
+    subset(all_present == TRUE)                                       # keep only samples that have >60% coverage for all three references
+View(GLAMR_bam_stats_60_sxtA_cov_mm2)
+
+#Summary: 24 samples, all >60% cover for sxtA reference in metagenomic data
+
+#######################
+###STATS###^^^Above is sxtA mapping results
+#######################
+
+#Distinct date counts (metagenomes) 
+metagenome_date <- GLAMR_sample_table %>%
+              #filter(!is.na(collection_date)) %>%                                      #Remove samples without collection_date (don't use, because removes samp_4333 - doesn't change anything else)
+              distinct(collection_date, .keep_all = TRUE)                               #Keep only one unique date 
+                                                                                        #123 dates of metagenomic data
+#Distinct date detects (metagenomes)
+metagenome_dateDetect <- GLAMR_sample_table %>%
+                   filter(SampleID %in% GLAMR_bam_stats_60_sxtA_cov_mm2$sample_id) %>%  #Keep only samples with sxtA hits >60% cover
+                   distinct(collection_date, .keep_all = TRUE)                          #Keep only one unique date 
+                                                                                        #13 dates of metagenomic data
+#Distinct sample counts (metagenomes)
+metagenome_run <- GLAMR_sample_table %>%
+                  distinct(SampleID, .keep_all = TRUE)                #Keep only one unique sample for each metagenome reaction
+                                                                      #570 samples where metagenomes run (including 1 with Date: NA (samp_4333))
+
+#Distinct sample detects
+#24 samples, from data above
+
+```
+
+Basic metagenomic stats - sxt1 ALL
+```{r}
+
+#Determine contig and operon (subset) % id and coverage - minimap2 - directly taken from notebook3b (updated Oct. 25, 2023)
+GLAMR_bam_stats_mm2 <- read_csv(file = "mapping/reads/GLAMR_sxtAll_mm2/output/GLAMR_bam_stats_mm2.csv", col_names = TRUE)
+
+# data table of samples with >60% cover for all three references GLAMR_bam_stats_60_cov_mm2
+GLAMR_bam_stats_60_cov_mm2 <- GLAMR_bam_stats_mm2 %>%
+    group_by(sample_id, seqnames) %>% 
+      select(seqnames, sample_id, percent_cover, percent_id_ref_contig) %>% # skim down data table to just data for each ref
+      distinct() %>%
+    group_by(sample_id) %>%
+      mutate(gene_present = percent_cover > 60,                       # does reference sequence have > 60% coverage?
+             all_present = all(gene_present)) %>%                     # do all three references have > 60% coverage?
+    subset(all_present == TRUE)                                       # keep only samples that have >60% coverage for all three references
+View(GLAMR_bam_stats_60_cov_mm2)
+
+# data table of samples with >60% cover for all three references, but coverage from references is combined (one combined reference)
+GLAMR_bam_stats_60_cov_comb_ref <- GLAMR_bam_stats_mm2 %>%
+    subset(sample_id %in% unique(GLAMR_bam_stats_60_cov_mm2$sample_id)) %>%    # subset only samples that have >60% cover for all three references
+    group_by(sample_id) %>%
+      mutate(seq_length_comb_ref = sum(unique(seq_length)),                        # sum unique reference lengths (each unique sequence) to get length of combined reference 
+             percent_cover_comb_ref = (sum(count>0) / seq_length_comb_ref) * 100,  # number of bases matching combined reference divided by combined reference sequence length
+             percent_id_comb_ref = (sum(count) / sum(depth)) * 100) %>%            # all reads matching combined ref / total reads for combined ref sequence
+      reframe(                                                                     # skim down data table to just data for each sample
+        sample_id = unique(sample_id),
+        percent_cover_comb_ref = unique(percent_cover_comb_ref),
+        percent_id_comb_ref  = unique( percent_id_comb_ref))
+  
+View(GLAMR_bam_stats_60_cov_comb_ref)
+#Summary: 22 samples, all >97% combined ref ID - December 9, 2023 
+#refer to date/sample counts in chunk above
+
+```
+
+Overlapping observations
+```{r}
+
+#refer to dataframe CIGLR_qPCR_GLAMR_merge_v3, which only includes samples that have both qPCR and metagenomic observations
+#create table with distinct samples, then moving v3 to v4
+   CIGLR_qPCR_GLAMR_merge_v4 <- CIGLR_qPCR_GLAMR_merge_v3 %>%
+                                arrange(desc(sxtA_Copies_mL)) %>%       #Arrange by sxtA_Copies_mL for visual analysis
+                                distinct(SampleID, .keep_all = TRUE)    #Keep only one unique SampleID 
+
+#117 samples with qPCR and metagenome data
+
+#shared: qPCR & sxtA mapping (>60%) 
+#sample has >45 copies (sxtA_Copies_Rxn) and >60% coverage of sxtA
+runDetect_qPCR_metagenome <- CIGLR_qPCR_GLAMR_merge_v4 %>%
+                                filter(sxtA_Copies_Rxn>=45) %>%         #Keep samples above detection for qPCR
+                                filter(SampleID %in% GLAMR_bam_stats_60_sxtA_cov_mm2$sample_id) 
+                                                                         #8 distinct samples where sxtA detected in both qPCR/metagenomes
+
+#differences: qPCR & sxtA mapping (>60%)
+#detect in metagenomes, but not qPCR
+runDetect_metagenomeOnly <- CIGLR_qPCR_GLAMR_merge_v4 %>% 
+                                filter(is.na(sxtA_Copies_Rxn) | sxtA_Copies_Rxn < 45) %>%       #Keep samples below qPCR detection-limit
+                                filter(SampleID %in% GLAMR_bam_stats_60_sxtA_cov_mm2$sample_id) #Keep samples with sxtA hits >60% cover
+                                                                                                #1 sample with hits in metagenome and NOT qPCR
+
+runDetect_qPCROnly <- CIGLR_qPCR_GLAMR_merge_v4 %>%
+                                filter(sxtA_Copies_Rxn>=45) %>%                                    #Keep samples above detection for qPCR
+                                filter(!(SampleID %in% GLAMR_bam_stats_60_sxtA_cov_mm2$sample_id)) #Remove samples with sxtA hits >60% cover
+                                                                                                   #31 samples with hits in qPCR and NOT metagenome sxtA
+
+runDetect_Neither <- CIGLR_qPCR_GLAMR_merge_v4 %>%
+                                filter(is.na(sxtA_Copies_Rxn) | sxtA_Copies_Rxn < 45) %>%          #Keep only samples below qPCR detection-limit
+                                filter(!(SampleID %in% GLAMR_bam_stats_60_sxtA_cov_mm2$sample_id)) #Remove samples with sxtA hits >60% cover
+                                                                                                   #77 samples WITHOUT hits in metagenome or qPCR
+#############################################################
+#shared: qPCR & sxtAll mapping (>60%) 
+#sample has >45 copies (sxtA_Copies_Rxn) and >60% coverage of sxtAll
+runDetect_qPCR_metagenomeAll <- CIGLR_qPCR_GLAMR_merge_v4 %>%
+                                filter(sxtA_Copies_Rxn>=45) %>%                                 #Keep samples above detection for qPCR
+                                filter(SampleID %in% GLAMR_bam_stats_60_cov_comb_ref$sample_id) #Keep samples with sxtAll hits >60% cover
+                                                                                          #7 samples where sxtAll detected in both qPCR/metagenomes
+
+#differences: qPCR & sxtA mapping (>60%)
+#detect in metagenomes, but not qPCR
+runDetect_metagenomeAllOnly <- CIGLR_qPCR_GLAMR_merge_v4 %>% 
+                                filter(is.na(sxtA_Copies_Rxn) | sxtA_Copies_Rxn < 45) %>%       #Keep samples below qPCR detection-limit
+                                filter(SampleID %in% GLAMR_bam_stats_60_cov_comb_ref$sample_id) #Keep samples with sxtAll hits >60% cover
+                                                                                                #1 sample with hits in metagenome and NOT qPCR
+
+runDetect_qPCROnly_All <- CIGLR_qPCR_GLAMR_merge_v4 %>%
+                                filter(sxtA_Copies_Rxn>=45) %>%                                    #Keep samples above detection for qPCR
+                                filter(!(SampleID %in% GLAMR_bam_stats_60_cov_comb_ref$sample_id)) #Remove samples with sxtAll hits >60% cover
+                                                                                                   #32 samples with hits in qPCR and NOT metagenome
+
+runDetect_Neither_All <- CIGLR_qPCR_GLAMR_merge_v4 %>%
+                                filter(is.na(sxtA_Copies_Rxn) | sxtA_Copies_Rxn < 45) %>%          #Keep only samples below qPCR detection-limit
+                                filter(!(SampleID %in% GLAMR_bam_stats_60_cov_comb_ref$sample_id)) #Remove samples with sxtAll hits >60% cover
+                                                                                                   #77 samples WITHOUT hits in metagenome or qPCR
+
+```
+
+
+
