@@ -1,0 +1,810 @@
+---
+title: "Examination of MAG presence in samples"
+author: "Paul Den Uyl"
+date: "2023-11-12"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+#rm(list=ls());if(is.null(dev.list()["RStudioGD"])){} else {dev.off(dev.list()["RStudioGD"])};cat("\014")
+library(tidyverse)
+library(dplyr)
+library(here)
+library(vroom)
+library(ggmap)
+library(googledrive)
+library(readxl)
+library(Biostrings)
+library(lubridate)
+library(ggplot2)
+library(ggpmisc)
+library(Rsamtools)
+library(ggnewscale)
+library(cowplot)
+library(furrr)
+knitr::opts_knit$set(root.dir = here::here("")) 
+
+#Load postgres server running on Alpena
+pg <- DBI::dbConnect(RPostgres::Postgres(),dbname = "XXX", host = "XXX", port = "XXX", user = "XXX", password = "XXX")
+
+#Load GLAMR GTDBTK data
+gtdb <- tbl(pg, "GTDB") %>% 
+  collect() %>% 
+  mutate(sample = str_extract(user_genome, "samp_\\d+")) %>% 
+  relocate(user_genome, sample) 
+
+```
+---Outline---
+1.) symlink samples for mapping MAG coverage check
+2.) Perform read mapping to this study's reference MAGs
+3.) Import reference MAG IDs and sequences for steps 4 and 5
+4.) Analyze rep mags across GLAMR - RPKM
+5.) Analyze rep mags across GLAMR - Coverage and %ID
+6.) Plot GLAMR bam rpkm data from ref mags - heat map 
+7.) Perform coverage check on specificity of mapping --- rep MAGs LE20-WE8 & LE16-WE8-Aug 
+8.) Analysis for manuscript statements
+-------------
+
+1.) symlink samples for mapping MAG coverage check
+```{r} 
+
+#Identify samples by set (i.e. project) of interest in GLAMR - Western Lake Erie only
+StudyID_to_use_WLE <- c("set_17", "set_18", "set_35", "set_36", "set_38", "set_40", "set_41", "set_42", "set_46", "set_51", "set_56")
+
+GLAMR_table_import <- read_xlsx("data/Great_Lakes_Omics_Datasets_Oct27_23.xlsx", sheet = "samples") #Import GLAMR metadata
+##
+#IMPORTANT NOTE
+##
+#Dataset includes all relevant samples.  In future code, updated sample tables may be used to add relevant information (i.e. collection date, station)
+#Done in heat map chunk
+
+GLAMR_sample_table <- GLAMR_table_import %>% 
+                              mutate(geo_loc_name = if_else(SampleID == "samp_4333", 
+                                                            "Lake Erie", geo_loc_name)) %>%              #change geo_loc_name from NA to Lake Erie for samp_4333 (KEEP!)
+                              filter(StudyID %in% StudyID_to_use_WLE,                                    #include only StudyID of interest (WLE)
+                              sample_type == "metagenome",                                               #include only data type of interest (metagenome)
+                              !(is.na(NOAA_Site) & is.na(geo_loc_name)),                                 #remove samples without NOAA_Site and geo_loc_name
+                              !(NOAA_Site %in% c("NA", "NF") & geo_loc_name %in% c("NA", "NF")),         #remove samples without NOAA_Site and geo_loc_name
+                              !grepl("SB.*", NOAA_Site),                                                 #remove samples from Sag. Bay
+                              SampleID != "samp_4304")                                                   #remove sample from Thames River
+
+GLAMR_sample_table %>% distinct(SampleID) %>% count #570 WLE metagenome samples in GLAMR - October 27, 2023
+
+#Gather all WLE GLAMR sample raw read paths, sym link to new path
+read_paths_raw_WLE <- system("ls /geomicro/data2/kiledal/GLAMR/data/omics/metagenomes/*/reads/decon_*_reads_fastp.fastq.gz",intern = TRUE) %>% 
+  tibble(read_path = .) %>% mutate(sample = read_path %>% str_remove(".*metagenomes/") %>% str_remove("/reads.*"),
+  		 dir = read_path %>% str_remove(".*/decon_") %>% str_remove("_reads.*"),
+         new_path = str_glue("/geomicro/data2/pdenuyl2/neurotoxin_thesis/FINAL2/mapping/reads/GLAMR_WLERef_mm2/reads/{sample}__{dir}.fastq.gz")) %>% 
+         filter(sample %in% GLAMR_sample_table$SampleID)
+
+#symbolic link read_paths
+file.symlink(read_paths_raw_WLE$read_path, read_paths_raw_WLE$new_path)
+
+```
+
+2.) Perform read mapping to this study's reference MAGs
+```{bash}
+
+#Database WLERefCat3.fa - concatenated bins: 
+
+conda config --set channel_priority strict
+snakemake run_read_mapping_GLAMRraw_WLERef_mm2 --profile config/snakemake_profiles/alpena/ 
+
+
+```
+
+3.) Import reference MAG IDs and sequences for steps 4 and 5
+```{r}
+
+# MAG ID label import
+ref_mag_id <- c("samp_468", "samp_471", "samp_477", "samp_481", "samp_507", "samp_2059", "samp_2073", "samp_3937", "samp_4305", "samp_4344", "samp_4380")  # identify MAG names
+pattern <- paste(ref_mag_id, collapse = "|")  # allow them to be extracted individually through pattern matching
+
+# import reference MAGs and calculate length
+ADA_MAG_ref <- Biostrings::readDNAStringSet("mapping/reads/GLAMR_WLERef_mm2/database/WLERefCat3.fa") %>%  # import reference fasta
+    as.character() %>%
+    data.frame(ref_base = ., seqnames = names(.)) %>%
+      mutate(mag = str_extract(seqnames, pattern),  # label MAG names
+           seq_length = nchar(ref_base))  # get length of each contig
+
+```
+
+4.) Analyze rep mags across GLAMR - RPKM
+```{r}
+
+ref_mag_length <- ADA_MAG_ref %>%
+    group_by(mag) %>%
+      mutate(mag_length = sum(seq_length)) %>%  # get length of each MAG
+    reframe(mag = unique(mag),
+            mag_length = unique(mag_length))
+
+# function to generate mag rpkm for each sample
+ref_mag_bam_rpkm <- function(bam_path){
+  
+  # identify sample_id from bam file path
+    sample_id <- bam_path %>% str_remove(".*GLAMR_WLERef_mm2/output/bam/") %>% str_remove("_WLERefCat.*")
+    
+  # get total sequencing read counts for sample from GLAMR
+      read_count_fastp <- read_tsv(paste0("/geomicro/data2/kiledal/GLAMR/data/omics/metagenomes/",sample_id,"/reads/",sample_id,"_read_count_fastp.tsv"))
+      read_count_decon_fwd <- read_count_fastp[4, 2]
+      read_count_decon_rev <- read_count_fastp[4, 3]
+      total_decon_sample_reads <- sum(read_count_decon_fwd, read_count_decon_rev)  # get total read count from GLAMR (all fwd and rev reads)
+
+  # read in bam file
+    bam <- Rsamtools::BamFile(file = bam_path,
+                            index = paste0(bam_path,".bai"))
+    
+  # read the BAM file and count aligned reads
+    bam_file_df <- as.data.frame(scanBam(bam))
+    aligned_read_counts <- as.data.frame(table(bam_file_df$rname))
+
+    mapped_reads_df  <-  aligned_read_counts %>%
+                          mutate(mag = str_extract(Var1, pattern)) %>%  # label MAG names
+                         group_by(mag) %>% 
+                          mutate(mapped_reads = sum(Freq)) %>%  # calculate number of mapped reads per MAG
+                     distinct(mag,.keep_all = TRUE) %>%
+                          select(-Freq)                         # remove 'Freq' after distinct(), because not relevant for entire MAG
+  
+    rpkm <- left_join(mapped_reads_df, ref_mag_length, by = "mag") %>%
+                 mutate(total_decon_sample_reads,                # add total_decon_sample_reads determined earlier in function
+                        sample_id,                               # add sample_id determined earlier in function
+                        rpkm = (mapped_reads / (mag_length * total_decon_sample_reads)) * 1000000) %>%  # Calculate RPKM
+                  select(-Var1)                                  # remove 'Freq' after distinct(), because not relevant for entire MAG
+} 
+
+# create list of bam paths to process
+bam_paths_rpkm <- system("ls mapping/reads/GLAMR_WLERef_mm2/output/bam/*.bam", intern = TRUE) %>%
+  tibble(bam_path = .) #%>%
+  #filter(!(bam_path %in% c("mapping/reads/GLAMR_WLERef_mm2/output/bam/samp_40_WLERefCat3_mapped.bam")))
+
+# Error in next step caused by: '/geomicro/data2/kiledal/GLAMR/data/omics/metagenomes/samp_4306/reads/samp_4306_read_count_fastp.tsv' does not exist. Also samp_4333.
+##Actually, samp_40 doesn't have any read counts, so I'll add them manually!
+
+#40 - 
+# function to generate mag rpkm for samp_40
+bam_path <- "mapping/reads/GLAMR_WLERef_mm2/output/bam/samp_40_WLERefCat3_mapped.bam"
+  # identify sample_id from bam file path 
+    sample_id <- bam_path %>% str_remove(".*GLAMR_WLERef_mm2/output/bam/") %>% str_remove("_WLERefCat.*")
+    
+  # get total sequencing read counts for sample from GLAMR
+    #command: printf "decon_reads\t$(($(zcat decon_fwd_reads_fastp.fastq.gz | wc -l) / 4 ))\t$(($(zcat decon_rev_reads_fastp.fastq.gz | wc -l) / 4 ))\n"
+      read_count_decon_fwd <- 69425017
+      read_count_decon_rev <- 69425017
+      total_decon_sample_reads <- sum(read_count_decon_fwd, read_count_decon_rev)  # get total read count from GLAMR (all fwd and rev reads)
+
+  # read in bam file
+    bam <- Rsamtools::BamFile(file = bam_path,
+                            index = paste0(bam_path,".bai"))
+    
+  # read the BAM file and count aligned reads
+    bam_file_df <- as.data.frame(scanBam(bam))
+    aligned_read_counts <- as.data.frame(table(bam_file_df$rname))
+
+    mapped_reads_df  <-  aligned_read_counts %>%
+                          mutate(mag = str_extract(Var1, pattern)) %>%  # label MAG names
+                         group_by(mag) %>% 
+                          mutate(mapped_reads = sum(Freq)) %>%  # calculate number of mapped reads per MAG
+                     distinct(mag,.keep_all = TRUE) %>%
+                          dplyr::select(-Freq)                         # remove 'Freq' after distinct(), because not relevant for entire MAG
+  
+    rpkm <- left_join(mapped_reads_df, ref_mag_length, by = "mag") %>%
+                 mutate(total_decon_sample_reads,                # add total_decon_sample_reads determined earlier in function
+                        sample_id,                               # add sample_id determined earlier in function
+                        rpkm = (mapped_reads / (mag_length * total_decon_sample_reads)) * 1000000) %>%  # Calculate RPKM
+                  dplyr::select(-Var1)                                  # remove 'Freq' after distinct(), because not relevant for entire MAG
+Samp_40_bam_rpkm_mm2 <- rpkm
+
+#39 - 
+# function to generate mag rpkm for samp_39
+bam_path <- "mapping/reads/GLAMR_WLERef_mm2/output/bam/samp_39_WLERefCat3_mapped.bam"
+  # identify sample_id from bam file path 
+    sample_id <- bam_path %>% str_remove(".*GLAMR_WLERef_mm2/output/bam/") %>% str_remove("_WLERefCat.*")
+    
+  # get total sequencing read counts for sample from GLAMR
+    #command: printf "decon_reads\t$(($(zcat decon_fwd_reads_fastp.fastq.gz | wc -l) / 4 ))\t$(($(zcat decon_rev_reads_fastp.fastq.gz | wc -l) / 4 ))\n"
+      read_count_decon_fwd <- 110543202
+      read_count_decon_rev <- 110543202
+      total_decon_sample_reads <- sum(read_count_decon_fwd, read_count_decon_rev)  # get total read count from GLAMR (all fwd and rev reads)
+
+  # read in bam file
+    bam <- Rsamtools::BamFile(file = bam_path,
+                            index = paste0(bam_path,".bai"))
+    
+  # read the BAM file and count aligned reads
+    bam_file_df <- as.data.frame(scanBam(bam))
+    aligned_read_counts <- as.data.frame(table(bam_file_df$rname))
+
+    mapped_reads_df  <-  aligned_read_counts %>%
+                          mutate(mag = str_extract(Var1, pattern)) %>%  # label MAG names
+                         group_by(mag) %>% 
+                          mutate(mapped_reads = sum(Freq)) %>%  # calculate number of mapped reads per MAG
+                     distinct(mag,.keep_all = TRUE) %>%
+                          dplyr::select(-Freq)                         # remove 'Freq' after distinct(), because not relevant for entire MAG
+  
+    rpkm <- left_join(mapped_reads_df, ref_mag_length, by = "mag") %>%
+                 mutate(total_decon_sample_reads,                # add total_decon_sample_reads determined earlier in function
+                        sample_id,                               # add sample_id determined earlier in function
+                        rpkm = (mapped_reads / (mag_length * total_decon_sample_reads)) * 1000000) %>%  # Calculate RPKM
+                  dplyr::select(-Var1)                                  # remove 'Freq' after distinct(), because not relevant for entire MAG
+Samp_39_bam_rpkm_mm2 <- rpkm
+
+#2141 - 
+# function to generate mag rpkm for samp_2141
+bam_path <- "mapping/reads/GLAMR_WLERef_mm2/output/bam/samp_2141_WLERefCat3_mapped.bam"
+  # identify sample_id from bam file path 
+    sample_id <- bam_path %>% str_remove(".*GLAMR_WLERef_mm2/output/bam/") %>% str_remove("_WLERefCat.*")
+    
+  # get total sequencing read counts for sample from GLAMR
+    #command: printf "decon_reads\t$(($(zcat decon_fwd_reads_fastp.fastq.gz | wc -l) / 4 ))\t$(($(zcat decon_rev_reads_fastp.fastq.gz | wc -l) / 4 ))\n"
+      read_count_decon_fwd <- 76247941
+      read_count_decon_rev <- 76247941
+      total_decon_sample_reads <- sum(read_count_decon_fwd, read_count_decon_rev)  # get total read count from GLAMR (all fwd and rev reads)
+
+  # read in bam file
+    bam <- Rsamtools::BamFile(file = bam_path,
+                            index = paste0(bam_path,".bai"))
+    
+  # read the BAM file and count aligned reads
+    bam_file_df <- as.data.frame(scanBam(bam))
+    aligned_read_counts <- as.data.frame(table(bam_file_df$rname))
+
+    mapped_reads_df  <-  aligned_read_counts %>%
+                          mutate(mag = str_extract(Var1, pattern)) %>%  # label MAG names
+                         group_by(mag) %>% 
+                          mutate(mapped_reads = sum(Freq)) %>%  # calculate number of mapped reads per MAG
+                     distinct(mag,.keep_all = TRUE) %>%
+                          dplyr::select(-Freq)                         # remove 'Freq' after distinct(), because not relevant for entire MAG
+  
+    rpkm <- left_join(mapped_reads_df, ref_mag_length, by = "mag") %>%
+                 mutate(total_decon_sample_reads,                # add total_decon_sample_reads determined earlier in function
+                        sample_id,                               # add sample_id determined earlier in function
+                        rpkm = (mapped_reads / (mag_length * total_decon_sample_reads)) * 1000000) %>%  # Calculate RPKM
+                  dplyr::select(-Var1)                                  # remove 'Freq' after distinct(), because not relevant for entire MAG
+Samp_2141_bam_rpkm_mm2 <- rpkm
+
+#2057 - 
+# function to generate mag rpkm for samp_2057
+bam_path <- "mapping/reads/GLAMR_WLERef_mm2/output/bam/samp_2057_WLERefCat3_mapped.bam"
+  # identify sample_id from bam file path 
+    sample_id <- bam_path %>% str_remove(".*GLAMR_WLERef_mm2/output/bam/") %>% str_remove("_WLERefCat.*")
+    
+  # get total sequencing read counts for sample from GLAMR
+    #command: printf "decon_reads\t$(($(zcat decon_fwd_reads_fastp.fastq.gz | wc -l) / 4 ))\t$(($(zcat decon_rev_reads_fastp.fastq.gz | wc -l) / 4 ))\n"
+      read_count_decon_fwd <- 13409039
+      read_count_decon_rev <- 13409039
+      total_decon_sample_reads <- sum(read_count_decon_fwd, read_count_decon_rev)  # get total read count from GLAMR (all fwd and rev reads)
+
+  # read in bam file
+    bam <- Rsamtools::BamFile(file = bam_path,
+                            index = paste0(bam_path,".bai"))
+    
+  # read the BAM file and count aligned reads
+    bam_file_df <- as.data.frame(scanBam(bam))
+    aligned_read_counts <- as.data.frame(table(bam_file_df$rname))
+
+    mapped_reads_df  <-  aligned_read_counts %>%
+                          mutate(mag = str_extract(Var1, pattern)) %>%  # label MAG names
+                         group_by(mag) %>% 
+                          mutate(mapped_reads = sum(Freq)) %>%  # calculate number of mapped reads per MAG
+                     distinct(mag,.keep_all = TRUE) %>%
+                          dplyr::select(-Freq)                         # remove 'Freq' after distinct(), because not relevant for entire MAG
+  
+    rpkm <- left_join(mapped_reads_df, ref_mag_length, by = "mag") %>%
+                 mutate(total_decon_sample_reads,                # add total_decon_sample_reads determined earlier in function
+                        sample_id,                               # add sample_id determined earlier in function
+                        rpkm = (mapped_reads / (mag_length * total_decon_sample_reads)) * 1000000) %>%  # Calculate RPKM
+                  dplyr::select(-Var1)                                  # remove 'Freq' after distinct(), because not relevant for entire MAG
+Samp_2057_bam_rpkm_mm2 <- rpkm
+
+#IMPORTANT: Because there were no read counts for samp_39, samp_40, and samp_2141, I'm going to manually calculate them and make new data.tables here.  Then add them to GLAMR_bam_rpkm_mm2.
+
+#plan(multisession, workers = 8)
+##GLAMR_bam_rpkm_mm2 <- future_map_dfr(bam_paths_rpkm$bam_path, ~ ref_mag_bam_rpkm(.x), .progress = TRUE) # last run: Dec 13, 2023
+#plan(sequential) #stop multisession
+
+#write_csv(GLAMR_bam_rpkm_mm2_comb, file = "mapping/reads/GLAMR_WLERef_mm2/output/GLAMR_bam_rpkm_mm2_Dec14_23.csv") 
+GLAMR_bam_rpkm_mm2 <- read_csv(file = "mapping/reads/GLAMR_WLERef_mm2/output/GLAMR_bam_rpkm_mm2_Dec14_23.csv")
+
+GLAMR_bam_rpkm_mm2_comb <- bind_rows(GLAMR_bam_rpkm_mm2, Samp_39_bam_rpkm_mm2, Samp_40_bam_rpkm_mm2, Samp_2141_bam_rpkm_mm2, Samp_2057_bam_rpkm_mm2) %>%
+                                filter(!(sample_id %in% c("samp_39", "samp_40", "samp_2141", "samp_2057") & is.na(rpkm))) %>%
+                                distinct(sample_id, mag, .keep_all = TRUE)
+
+GLAMR_bam_rpkm_mm2 <- GLAMR_bam_rpkm_mm2_comb
+
+```
+
+5.) Analyze rep mags across GLAMR - Coverage and %ID
+```{r}
+
+# format reference sequences to address coverage and %ID
+ref_mag_cov <- ADA_MAG_ref %>%
+  separate_longer_position(ref_base, width = 1) %>%
+  group_by(seqnames) %>%
+  mutate(pos = row_number(),
+         mag = str_extract(seqnames, pattern)) %>%
+  group_by(mag) %>%
+  mutate(mag_length = n()) %>%
+ungroup() 
+
+ref_mag_bam_cov <- function(bam_path){
+  
+  # identify sample_id from bam file path
+  sample_id <- bam_path %>% str_remove(".*GLAMR_WLERef_mm2/output/bam/") %>% str_remove("_WLERefCat.*")
+  
+  # read in bam file
+  bam <- Rsamtools::BamFile(file = bam_path,
+                            index = paste0(bam_path,".bai"))
+
+  # read in pileup file
+ pileup_ref_join <- Rsamtools::pileup(bam,pileupParam = PileupParam(distinguish_strands = FALSE)) %>%
+    full_join(ref_mag_cov, ., by = c("seqnames", "pos"))      # join pileup file and reference sequences
+  
+  out_mag_depth <- pileup_ref_join %>%
+    group_by(mag) %>% 
+      mutate(mag_depth = sum(count, na.rm = TRUE)) %>%                       # alignment depth at each position
+    distinct(mag, mag_depth) # keep unique MAG depth data
+  
+  out_percent_id <- pileup_ref_join %>%
+    group_by(mag) %>%
+     filter(nucleotide == ref_base) %>%
+     left_join(., out_mag_depth, by = c("mag")) %>%
+      mutate(id_ref_mag_percent = (sum(count, na.rm = TRUE) / mag_depth) * 100)    # percent identity of MAG compared to reference      
+   
+  out_cover <- pileup_ref_join %>%
+    filter(count >= 1, na.rm = TRUE) %>%                   # keep only positions with at least 1 count
+    distinct(seqnames, pos, .keep_all = TRUE) %>%          # remove duplicate positions (doesn't matter if matching ref)
+    group_by(mag) %>% 
+      mutate(mag_cover_length = sum(count >= 1),           # count number of unique bases in MAG with at least 1 count
+             mag_cover_percent = mag_cover_length / mag_length * 100,     # calculate % cover
+             sample_id) 
+  
+  out <- left_join(out_percent_id, out_cover, by = c("mag", "seqnames", "pos")) %>%   # merge %id and cover data tables
+    distinct(mag, mag_cover_length, mag_cover_percent, id_ref_mag_percent, sample_id) # keep unique %id and cover MAG data
+  
+} 
+
+# create list of bam paths to process
+bam_paths_ref_cov <- system("ls mapping/reads/GLAMR_WLERef_mm2/output/bam/*.bam", intern = TRUE) %>%
+  tibble(bam_path = .) 
+
+#plan(multisession, workers = 24)
+#options(future.globals.maxSize = 10*1024^3)
+##GLAMR_bam_MAGcover_mm2 <- future_map_dfr(bam_paths_ref_cov$bam_path, ~ ref_mag_bam_cov(.x), .progress = TRUE) # last run: Nov 30, 2023
+#plan(sequential) #stop multisession
+
+#write_csv(GLAMR_bam_MAGcover_mm2, file = "mapping/reads/GLAMR_WLERef_mm2/output/GLAMR_bam_MAGcover_mm2_Dec1_23.csv")
+GLAMR_bam_MAGcover_mm2 <- read_csv(file = "mapping/reads/GLAMR_WLERef_mm2/output/GLAMR_bam_MAGcover_mm2_Dec1_23.csv")
+
+```
+
+6.) Plot GLAMR bam rpkm data from ref mags - dot plot
+```{r}
+
+#Join rpkm and query cover results
+GLAMR_bam_stats <- left_join(GLAMR_bam_rpkm_mm2, GLAMR_bam_MAGcover_mm2, by = c("sample_id", "mag"))  
+#Join rpkm and query cover results with GLAMR sample table
+GLAMR_sample_table_bam_stats <- full_join(GLAMR_sample_table, GLAMR_bam_stats, by = c("SampleID" = "sample_id")) 
+
+##**********
+#COMBINE WITH DATA FROM ABOVE - 
+#Metadata addition (Dec. 1, 2023)
+GLAMR_Seagull_Site_import <- read_csv("data/Great_Lakes_Omics_Datasets_SeagullSiteAssignments_Nov25_23.csv") #Import Seagull Site Assignments
+GLAMR_sample_table_bam_stats <- left_join(GLAMR_sample_table_bam_stats, GLAMR_Seagull_Site_import, by = c("SampleID", "StudyID"))
+##**********
+
+##Here we are with a complete dataframe! - just call df
+df <- GLAMR_sample_table_bam_stats
+View(df)
+ 
+#Format date - subset data by query cover - select columns of interest for plotting
+df$collection_date <- as.Date(df$collection_date, format = "%Y-%m-%d")
+
+#Format and manipulate data frame for use in figure
+df_sub_data <- df %>% 
+                   mutate(rpkm = ifelse(is.na(rpkm), 0, rpkm),
+                         collection_date = collection_date %>% str_remove("T.*"),
+                         year = year(collection_date),
+                         month = month(collection_date, label=TRUE),
+                         day = day(collection_date),
+                         yday = yday(collection_date),
+                         week = week(collection_date),
+                         group = ifelse(mag %in% c("samp_471", "samp_2073"), "D_lem",
+                                 ifelse(mag %in% c("samp_3937", "samp_4344", "samp_4380", "samp_507"), "D_circ",
+                                 ifelse(mag %in% c("samp_4305", "samp_2059", "samp_468"), "D_flos",
+                                 ifelse(mag %in% c("samp_477", "samp_481"), "C_issa", NA))))) %>%
+                    group_by(SampleID, group) %>%
+                    mutate(group_rpkm = sum(rpkm)) %>%
+                ungroup() %>% 
+  mutate(clustered_site = if_else(clustered_site == "WE12-S", "WE12", clustered_site),           #Note in manuscript
+         clustered_site = if_else(clustered_site == "WE16-WSW", "WE16", clustered_site),         #Note in manuscript
+         clustered_site = if_else(is.na(clustered_site), NOAA_Site, clustered_site)) %>%     
+  dplyr::select(SampleName, SampleID, mag, group, group_rpkm, mag_length, id_ref_mag_percent, mag_cover_percent, rpkm, lat, lon, NOAA_Site, collection_date, clustered_site, StudyID, year, month, day, yday, week) %>%  #select columns
+    dplyr::filter(!clustered_site %in% c("glamr_13", "glamr_11", "glamr_9", "glamr_8", "glamr_4", "glamr_3", "glamr_2")) %>%
+    filter(!month %in% c("Mar", "Apr", "May", "Jun", "Dec"))
+
+#Extract samples with critical missing data
+missing_data_df <- df_sub_data %>% 
+                              filter(id_ref_mag_percent > 95 & mag_cover_percent > 50) %>%
+                              mutate_if(is.character, ~ na_if(., "NA")) %>% 
+  filter(is.na(id_ref_mag_percent) | is.na(mag_cover_percent) | is.na(clustered_site) | is.na(year) | is.na(week) | is.na(group_rpkm))
+##LOOKS LIKE ONLY samp_4333 is missing data!
+
+################################################
+###PART TIME FIX!!! CHANGE LATER - Not 100% sure on samp_4333 station, but pretty sure it's close to WE6
+df_sub_data <- df_sub_data %>%
+                  mutate(clustered_site = if_else(SampleID == "samp_4333", "WE6", clustered_site),
+                         week = if_else(SampleID == "samp_4333", 44, week),
+                         year = if_else(SampleID == "samp_4333", 2022, year))
+################################################
+
+###Just a quick look at filtered data - for browsing
+df_sub_data_filt <- df_sub_data %>% 
+                              filter(id_ref_mag_percent > 95 & mag_cover_percent > 50)
+
+#DONT USE
+###df_sub_data_filt_lem <- df_sub_data %>% 
+###                              filter(id_ref_mag_percent > 95 & mag_cover_percent > 50 & group == "D_lem" & SampleID != "samp_40")
+#unique dates where D_lem appears
+
+#Combined D_lem: there should be highlights around weeks when sxt present. Sxt detection determined by all three contigs >60% cover (notebook 3b - determined from coverage depth plot)
+samp_w_sxt <- c("samp_2042", "samp_2047", "samp_2088", "samp_2092", "samp_2096", "samp_2141", "samp_2142", "samp_2153", "samp_2155", "samp_2158", "samp_4338", "samp_4341", "samp_451", "samp_470", "samp_471", "samp_472", "samp_477", "samp_481", "samp_484", "samp_499", "samp_509", "samp_511") 
+
+samp_w_sxtX <- c("samp_2151", "samp_2153", "samp_2158", "samp_4338", "samp_4341", "samp_481", "samp_484", "samp_797")
+
+plotted_samp_w_sxt <- df_sub_data_filt %>%       
+                          filter(SampleID %in% samp_w_sxt) %>%
+                          distinct(SampleID, .keep_all = TRUE)
+
+plotted_samp_w_sxtX <- df_sub_data_filt %>%       
+                          filter(SampleID %in% samp_w_sxtX) %>%
+                          distinct(SampleID, .keep_all = TRUE)
+
+groups_to_filter <- c("D_lem", "D_circ", "D_flos", "C_issa")
+
+for (group_name in groups_to_filter) {
+  filtered_data <- df_sub_data %>%
+    filter(group == group_name & id_ref_mag_percent > 95 & mag_cover_percent > 50) %>%
+      arrange(desc(group_rpkm)) %>%                       # sort the data by 'group_rpkm' 
+      group_by(year, week, clustered_site) %>%
+      filter(row_number() == 1)                           # keep only one row for each group_rpkm (highest value)
+
+  assign(paste0("GLAMR_sample_table_bam_stats_plotdf_", group_name), filtered_data)
+}
+
+# Accessing the created data frames:
+# GLAMR_sample_table_bam_stats_plotdf_D_lem
+# GLAMR_sample_table_bam_stats_plotdf_D_circ
+# GLAMR_sample_table_bam_stats_plotdf_D_flos
+# GLAMR_sample_table_bam_stats_plotdf_C_issa
+
+# Reordering x-axis variables
+df_sub_data$clustered_site <- factor(df_sub_data$clustered_site, levels = c("glamr_13", "glamr_11", "glamr_9", "glamr_8", "glamr_4", "glamr_3", "glamr_2", "WE16", "WE15", "WE14", "WE13", "WE12", "WE9", "WE8", "WE6", "WE4", "WE2"))
+
+MAG_map_plot1a <- 
+  ggplot(mapping = aes(week, clustered_site)) + 
+  geom_tile(data = df_sub_data, aes(fill = "Sequenced Sample")) +
+  scale_fill_identity() +
+  #geom_point(data = GLAMR_sample_table_bam_stats_plotdf_D_lem_sxtPlus, aes(x = week + 0, size = log(rpkm), fill = "D_lem_sxtPlus"), shape = 21) +
+  geom_point(data = GLAMR_sample_table_bam_stats_plotdf_D_lem, aes(x = week - 0.13, size = log(group_rpkm), fill = "D_lem"), shape = 21) +
+  geom_point(data = GLAMR_sample_table_bam_stats_plotdf_D_circ, aes(x = week + 0.13, size = log(rpkm), fill = "D_circ"), shape = 21) +
+  geom_point(data = GLAMR_sample_table_bam_stats_plotdf_D_flos, aes(x = week - 0.4, size = log(rpkm), fill = "D_flos"), shape = 21) +
+  geom_point(data = GLAMR_sample_table_bam_stats_plotdf_C_issa, aes(x = week + 0.4, size = log(rpkm), fill = "C_issa"), shape = 21) +
+  scale_size_continuous(range = c(0.00000000001, 7)) +
+  facet_grid(year ~ week, 
+             scales = "free", 
+             space = "free_y", 
+             switch = "x") + 
+  scale_x_continuous(breaks = NULL) +
+  labs(x = "Week Number", y = "NOAA Site") +
+  scale_fill_manual(name = "MAGs", 
+                   values = c("Sequenced Sample" = "lightgray", "D_circ" = "blue", "D_lem" = "orange", "D_flos" = "#BF40BF", "C_issa" = "#4DDBD4")) +
+  scale_color_manual("black") +
+  theme_classic() +
+  theme(axis.title.x = element_text(size = 28),  # Set the size of the x-axis label text
+        axis.title.y = element_text(size = 28),
+        strip.text = element_text(size = 22),
+        axis.text.y = element_text(size = 15))  # Set the size of the y-axis label text
+
+plot(MAG_map_plot1a) 
+
+# Use ggsave to save the ggplot as a PDF
+# ggsave(filename = "/geomicro/data2/pdenuyl2/neurotoxin_thesis/FINAL2/notebook4_pdf/rpkm_fig_WEStations_Dec12_23.pdf", plot = MAG_map_plot1a, device = "pdf", width = 26, height = 12)
+
+
+MAG_map_plot2a <- 
+  ggplot(mapping = aes(week, clustered_site)) + 
+  geom_tile(data = df_sub_data, aes(fill = "Sequenced Sample")) +
+  scale_fill_identity() +
+  geom_tile(data = subset(plotted_samp_w_sxt, !is.na(SampleID)), color = "red", fill = NA, size = 1.5) +  # Outline tiles from plotted_samp_w_sxt
+  geom_tile(data = subset(plotted_samp_w_sxtX, !is.na(SampleID)), color = "black", fill = NA, size = 1.5, linetype = "dashed") +  # Outline tiles from plotted_samp_w_sxtX
+  #geom_point(data = GLAMR_sample_table_bam_stats_plotdf_D_lem_sxtPlus, aes(x = week + 0, size = log(rpkm), fill = "D_lem_sxtPlus"), shape = 21) +
+  geom_point(data = GLAMR_sample_table_bam_stats_plotdf_D_lem, aes(x = week - 0.13, size = log(group_rpkm), fill = "D_lem"), shape = 21) +
+  geom_point(data = GLAMR_sample_table_bam_stats_plotdf_D_circ, aes(x = week + 0.13, size = log(rpkm), fill = "D_circ"), shape = 21) +
+  geom_point(data = GLAMR_sample_table_bam_stats_plotdf_D_flos, aes(x = week - 0.4, size = log(rpkm), fill = "D_flos"), shape = 21) +
+  geom_point(data = GLAMR_sample_table_bam_stats_plotdf_C_issa, aes(x = week + 0.4, size = log(rpkm), fill = "C_issa"), shape = 21) +
+  scale_size_continuous(range = c(0.00000000001, 7)) +
+  facet_grid(year ~ week, 
+             scales = "free", 
+             space = "free_y", 
+             switch = "x") + 
+  scale_x_continuous(breaks = NULL) +
+  labs(x = "Week Number", y = "NOAA Site") +
+  scale_fill_manual(name = "MAGs", 
+                   values = c("Sequenced Sample" = "lightgray", "D_circ" = "blue", "D_lem" = "orange", "D_flos" = "#BF40BF", "C_issa" = "#4DDBD4")) +
+  scale_color_manual("black") +
+  theme_classic() +
+  theme(axis.title.x = element_text(size = 28),  # Set the size of the x-axis label text
+        axis.title.y = element_text(size = 28),
+        strip.text = element_text(size = 22),
+        axis.text.y = element_text(size = 15))  # Set the size of the y-axis label text
+
+plot(MAG_map_plot2a) 
+
+# Use ggsave to save the ggplot as a PDF
+#ggsave(plot = MAG_map_plot2a, filename = #"/geomicro/data2/pdenuyl2/neurotoxin_thesis/FINAL2/notebook_pdf/BLACKDASH_REDrpkm_fig_WEStations_Dec15_23_FINAL.pdf", #device = "pdf", width = 26, height = 12)
+
+```
+
+7.) Analysis for manuscript statements
+```{r}
+ 
+# Accessing the plotted dataframes:
+df_sub_data_filt
+ GLAMR_sample_table_bam_stats_plotdf_D_lem
+ GLAMR_sample_table_bam_stats_plotdf_D_circ
+ GLAMR_sample_table_bam_stats_plotdf_D_flos
+ GLAMR_sample_table_bam_stats_plotdf_C_issa
+samp_w_sxt #red squares data source
+
+df84 <- df %>%
+  filter(SampleID %in% samp_w_sxt) %>%
+  table("collection_date")
+
+#Statement: "Their abundance and distribution exhibited significant variability between years with some years such as 2014, 2017, and 2018 having just 4 weeks where ADA MAGs were significantly detected"
+df_sub_data_filt %>% 
+    distinct(week, year, .keep_all = TRUE) %>%
+    count(year) 
+
+#Statement: "Multiple species often co-occured in the same sample (37% of samples) but when just one species was detected it was most often D. circinale (42% of samples), followed by D. lemmamannii and D. flosaquae (5% and 15% of samples, respectively)."
+#Number of samples with more than one, two, or three species detected
+result <- df_sub_data_filt %>%
+  group_by(SampleID) %>%
+  summarize(distinct_group_count = n_distinct(group)) %>%
+  group_by(distinct_group_count) %>%
+  summarize(sample_count = n())
+#108 samples with 1 species, 55 samples with 2 species, 8 samples with 3 species
+
+View(result)
+  #number of samples to divide by (check)
+samp_count <- df_sub_data_filt %>%
+    summarize(distinct_sample = n_distinct(SampleID)) # 171
+
+#Count number of samples with 1 species
+  #108
+#Count number of samples with >1 species
+  #63
+
+#When just one species detected:
+result2 <- df_sub_data_filt %>%
+  group_by(SampleID) %>%
+  mutate(distinct_group_count = n_distinct(group)) %>%
+  filter(distinct_group_count == 1)
+result2_Dcirc <- result2 %>%
+                    filter(group == "D_circ") %>%
+                    ungroup() %>%
+                    summarize(distinct_sample = n_distinct(SampleID)) # 71 D_circ
+result2_Dlem <- result2 %>%
+                    filter(group == "D_lem") %>%
+                    ungroup() %>%
+                    summarize(distinct_sample = n_distinct(SampleID)) # 9 D_lem
+result2_Dflos <- result2 %>%
+                    filter(group == "D_flos") %>%
+                    ungroup() %>%
+                    summarize(distinct_sample = n_distinct(SampleID)) # 25 D_flos
+
+
+#max rpkm for D. lem
+ df_sub_data_D_lem_analysis <- df_sub_data %>% filter(group == "D_lem")
+ df_sub_data_D_lem_analysis[df_sub_data_D_lem_analysis$group_rpkm == max(df_sub_data_D_lem_analysis$group_rpkm), ] #0.006929648
+ 
+###
+#occurances of D. lem at WE12
+ GLAMR_sample_table_bam_stats_plotdf_D_lem %>%
+   ungroup() %>%
+   filter(clustered_site == "WE12") %>%
+   distinct(collection_date, .keep_all = TRUE) %>%
+   count(collection_date)                          #8
+ 
+ GLAMR_sample_table_bam_stats_plotdf_D_lem %>%
+   ungroup() %>%
+   distinct(collection_date, .keep_all = TRUE) %>%
+   count(collection_date)                          #15
+
+#Overlap D_lem 2014, 2016, 2018 (14, 16, 18)
+ #Make df of samples where D_lem appears in 14, 16, 18
+D_lem_samps_14_16_18 <- df_sub_data_filt %>%
+  filter(group == "D_lem" & year %in% c(2014, 2016, 2018))
+   
+  #Make df of all group data sample list from above
+D_lem_otherGroups_14_16_18 <- df_sub_data_filt %>% 
+  filter(SampleID %in% D_lem_samps_14_16_18$SampleID)
+
+#Overlap D_lem 2017, 2019 - 2022
+ #Make df of samples where D_lem appears in 14, 16, 18
+D_lem_samps_17_19_20_21_22 <- df_sub_data_filt %>%
+  filter(group == "D_lem" & year %in% c(2017, 2019, 2020, 2021, 2022))
+   
+  #Make df of all group data sample list from above (17, 19-22)
+D_lem_otherGroups_17_19_20_21_22 <- df_sub_data_filt %>% 
+  filter(SampleID %in% D_lem_samps_17_19_20_21_22$SampleID)
+
+# Count months where D_lem appears
+df_sub_data_filt %>%
+  filter(group == "D_lem") %>%
+  distinct(collection_date, .keep_all = TRUE) %>%
+  group_by(month) %>%
+  count(month)
+
+# Count number of D_lem occurrences that DO match up with samp_w_sxt 
+df_sub_data_filt %>%
+  ungroup() %>%
+  filter(group == "D_lem",
+  SampleID %in% samp_w_sxt) %>%
+  distinct(SampleID, .keep_all = TRUE) %>%
+  count()
+results_DOmatch_sxt <- df_sub_data_filt %>%
+  ungroup() %>%
+  filter(group == "D_lem",
+  SampleID %in% samp_w_sxt) %>%
+  distinct(SampleID, .keep_all = TRUE)
+
+# Count number of D_lem occurrences that DO NOT match up with samp_w_sxt 
+df_sub_data_filt %>%
+  ungroup() %>%
+  filter(group == "D_lem",
+  !(SampleID %in% samp_w_sxt)) %>%
+  distinct(SampleID, .keep_all = TRUE) %>%
+  count()
+
+# Count number of sxt genes occurrences that DO NOT match up with D_lem
+df_sub_data %>%
+  ungroup() %>%
+  filter(group == "D_lem",
+  SampleID %in% samp_w_sxt) %>%
+  distinct(SampleID, .keep_all = TRUE) 
+
+samples_NOTmatching_sxt <- samp_w_sxt[!(samp_w_sxt %in% results_DOmatch_sxt$SampleID)]
+#Details about second sxt operon statement: 
+#"For the 7 of 22 samples where D. sp000312705 was not present by metagenomic read mapping when STX biosynthesis genes were present"
+#So 6 of 7 samples where D. sp000312705 was not present has sxtX gene.  "samp_2153" "samp_2155" "samp_2158" "samp_4338" "samp_4341" "samp_481"  "samp_484" #SAMPLE samp_2155 does not have sxtX gene mapped, but full operon
+
+df_sub_data %>%
+  ungroup() %>%
+  filter(SampleID %in% samples_NOTmatching_sxt) %>%
+  distinct(SampleID, .keep_all = TRUE) 
+
+# Max rpkm for all samples
+df_sub_data_filt[df_sub_data_filt$group_rpkm == max(df_sub_data_filt$group_rpkm), ]
+view(df_sub_data_filt) #for lower ranking group_rpkm and rpkm
+
+# C_issa year count
+df_sub_data_filt %>%
+                  filter(group == "C_issa") %>%
+                  distinct(year)
+
+# C_issa frequency count (unique dates)
+df_sub_data_filt %>%
+  group_by(year, group, collection_date) %>%
+  summarise(count_dates = n_distinct(collection_date)) %>%
+  group_by(year, group) %>%
+  summarise(sum(count_dates)) %>%
+  filter(group == "C_issa")
+
+# Unique sampling dates in 2020
+df_sub_data %>%
+  filter(year == 2020) %>%
+  summarise(count_dates = n_distinct(collection_date))
+
+# C_isssa frequency count (instances)
+df_sub_data_filt %>%
+  group_by(year, group, SampleID) %>%
+  summarise(count_instances = n_distinct(SampleID)) %>%
+  group_by(year, group) %>%
+  summarise(sum(count_instances)) %>%
+  arrange(-`sum(count_instances)`) %>%
+  filter(group == "C_issa")
+
+# Unique samples in 2020
+df_sub_data %>%
+  filter(year == 2020) %>%
+  summarise(count_samps = n_distinct(SampleID))
+
+# D_flos frequency count (unique dates)
+df_sub_data_filt %>%
+  group_by(year, group, collection_date) %>%
+  summarise(count_dates = n_distinct(collection_date)) %>%
+  group_by(year, group) %>%
+  summarise(sum(count_dates)) %>%
+  filter(group == "D_flos")
+
+# Unique dates in 2019
+  df_sub_data %>%
+    filter(year == 2019) %>%
+    summarise(count_dates = n_distinct(collection_date))
+
+# D_flos frequency count (instances)
+df_sub_data_filt %>%
+  group_by(year, group, SampleID) %>%
+  summarise(count_instances = n_distinct(SampleID)) %>%
+  group_by(year, group) %>%
+  summarise(sum(count_instances)) %>%
+  filter(group == "D_flos")
+
+# Unique samples in 2019
+  df_sub_data %>%
+    filter(year == 2019) %>%
+    summarise(count_samps = n_distinct(SampleID))
+
+# All frequency count
+df_sub_data_filt %>%
+  group_by(year, group, collection_date) %>%
+  summarise(count_dates = n_distinct(collection_date)) %>%
+  group_by(year, group) %>%
+  summarise(sum_count_dates = sum(count_dates)) %>%
+  arrange(-sum_count_dates)
+
+# Presence by date - D_circ, 2014 - 2019
+pres_D_Circ_14_15_16_17_18_19 <- df_sub_data_filt %>%
+                          filter(week >= 37) %>%
+                          group_by(year, group, collection_date) %>%
+                          summarise(count_dates = n_distinct(collection_date)) %>%
+                          group_by(year, group) %>%
+                          summarise(sum(count_dates)) %>%
+                          filter(group == "D_circ",
+                          year %in% 2014:2019)
+    # Total sampling dates - 2014 - 2019
+    samp_date_14_15_16_17_18_19 <- df_sub_data %>%
+                          filter(week >= 37) %>%
+                          group_by(year, collection_date) %>%
+                          summarise(count_dates = n_distinct(collection_date)) %>%
+                          group_by(year) %>%
+                          summarise(sum(count_dates)) %>%
+                          filter(year %in% 2014:2019)
+
+# Presence by date - D_circ, 2020 - 2022
+pres_D_Circ_20_21_22 <- df_sub_data_filt %>%
+                          filter(week >= 37) %>%
+                          group_by(year, group, collection_date) %>%
+                          summarise(count_dates = n_distinct(collection_date)) %>%
+                          group_by(year, group) %>%
+                          summarise(sum(count_dates)) %>%
+                          filter(group == "D_circ",
+                          year %in% 2020:2022)
+    # Total sampling dates - 2020 - 2022
+    samp_date_20_21_22 <- df_sub_data %>%
+                          filter(week >= 37) %>%
+                          group_by(year, collection_date) %>%
+                          summarise(count_dates = n_distinct(collection_date)) %>%
+                          group_by(year) %>%
+                          summarise(sum(count_dates)) %>%
+                          filter(year %in% 2020:2022)
+  
+#GENERAL QUESTIONS
+#unique date counts for each group / year
+df_sub_data_filt %>%
+  group_by(year, group, collection_date) %>%
+  summarise(count_dates = n_distinct(collection_date)) %>%
+  group_by(year, group) %>%
+  summarise(sum(count_dates))
+
+#Export supplemental table 2, RPKM values
+View(df_sub_data_filt)
+
+df_sub_data_filt_TableS2 <- df_sub_data_filt %>%
+                                  select(SampleName, mag, group, group_rpkm, mag_length, id_ref_mag_percent, mag_cover_percent, rpkm, lat, lon, NOAA_Site, collection_date, clustered_site, StudyID, year, month, day, yday, week, SampleID) %>%  #rearrange columns
+                                  rename("SampleID" = "SampleID_internal")
+
+write.csv(df_sub_data_filt_TableS2, file = "figs/TableS2.csv") 
+
+```
+
