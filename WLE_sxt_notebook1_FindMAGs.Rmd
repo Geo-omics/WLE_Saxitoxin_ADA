@@ -52,6 +52,7 @@ checkM <- tbl(pg, "checkm") %>%
 7.) Assign taxonomy (GTDBTK) and qc (CheckM) to bins of interest
 8.) Identify additional (non-sxt) ADA bins 
 9.) drep ADA bins
+10.) quick MAG counts
 -------------
 
 1.) General + assembly setup
@@ -341,7 +342,7 @@ GTDB_checkm_GLAMR_ada_passqc <- GTDB_checkm_GLAMR_ada %>% filter(Completeness >=
           #For this study, only two MAGs from non-WLE sources were selected through drep, so I manually selected them out and reran.  
 ```
 
-drep ADA bins
+9.) drep ADA bins
 ```{bash}
 
 ###conda config --set channel_priority strict
@@ -349,7 +350,7 @@ drep ADA bins
 
 ```
 
-Count number of samples, MAGs (<10% contam, >90% completeness), drep MAGs
+10.) Count number of samples, MAGs (<10% contam, >90% completeness), drep MAGs
 ```{r}
 
 #Count the number of samples from WLE - same as chunk 1
