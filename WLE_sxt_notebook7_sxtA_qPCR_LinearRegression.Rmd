@@ -1,0 +1,748 @@
+---
+title: "MC Code Adapted for SxtA - Cleaned_up_notebook7b - qPCR linear regressions"
+author: "Paul Den Uyl"
+date: "2024-02-28"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+#rm(list=ls())
+
+#install.packages("rstan")
+#install.packages("bayesplot")
+#install.packages("brms")
+#install.packages("mice")
+library(rstan)
+library(bayesplot)
+library(brms)
+library(readr)
+library(dplyr)
+library(pROC)
+library(forcats)
+library(mice)
+library(VIM)
+library(furrr)
+library(tidyverse)
+
+```
+
+## Import Data and Format Dependent Variable (sxtA_Copies_mL) ##
+```{r}
+
+joined_data <- read_csv("data/Joined_qPCR_and_Water_Quality_data.csv",show_col_types = FALSE)
+
+joined_data$Date_sameYear <- with(joined_data, update(joined_data$Date, year = 2000))         #Make new column with year 2000 for all dates, allows for month/day relationships to be examined ignoring year
+
+joined_data <- joined_data %>% 
+                          mutate(Date_core = if_else(Date_sameYear >= "2000-09-20" | Date_sameYear <= "2000-07-05", 0, 1)) %>%
+                          mutate(Date_core = as.integer(Date_core))                           #Make grouping variable for samples within and outside of sxt detection dates
+
+count_zero <- sum(joined_data$Date_core == 0, na.rm = TRUE)
+count_one <- sum(joined_data$Date_core == 1, na.rm = TRUE)
+count_zero #444 samples before and after first and last sxtA detection (metagenomic data)
+count_one  #730 samples between first and last sxtA detection (metagenomic data)
+
+#log10 transform dependent variable: sxtA_Copies_mL
+joined_data$log10_sxtA_Copies_mL_BDL_Replaced<-log10(as.numeric(joined_data$sxtA_Copies_mL_BDL_Replaced))
+
+#censor sxtA_Copies_mL, assign -1 to non-numeric values (NA and <BDL & <BQL)
+joined_data$sxtA_Copies_mL_censored<-with(joined_data,ifelse(as.numeric(sxtA_Copies_Rxn)>=45&!(sxtA_Copies_Rxn == "BD")&!is.na(sxtA_Copies_Rxn),0,-1)) #Per Phytoxigene instructions, select 45 copies/rxn and above (Rao's code does 50, shown in sxtA_Copies_mL)
+
+#check censored data 
+  #View(joined_data %>%
+  #          dplyr::select(sxtA_Copies_Rxn, sxtA_Copies_mL, log10_sxtA_Copies_mL_BDL_Replaced, sxtA_Copies_mL_censored))
+
+```
+
+#Sort independent data 
+```{r}
+###
+#List of independent variables to consider:
+#Ammonia
+#Chlorophyll a
+#Colored Dissolved Organic Material
+#Dissolved Microcystin
+#Dissolved N:P
+#Dissolved Oxygen
+#mcyE 
+#Nitrate Nitrite
+#Particulate Microcystin
+#Particulate N:P
+#Particulate Organic Carbon
+#Particulate Organic Nitrogen
+#Photosynthetically Active Radiation
+#Phycocyanin
+#Soluble Reactive Phosphorus
+#Specific Conductivity
+#Temperature
+#Total Cyanobacteria
+#Total Dissolved Phosphorus
+#Total Phosphorus
+#Total_Suspended_Solids
+#Turbidity
+#Volatile Suspended Solids
+#Particulate N:P
+#Dissolved N:P
+
+###
+#NOTE: For ease in determining distributions and other analyses, I'm going to remove all samples without qPCR data (never run) - wouldn't be considered in linear models anyway (because NA)
+  #Keep only samples with qPCR data
+   joined_data_sub <- joined_data %>% filter(!is.na(sxtA_Copies_Rxn)) 
+
+#################### 
+#Sample Temperature# 
+#################### 
+  #Combine Sample_Temperature_C & CTD_Temperature_C
+  joined_data_sub$Comb_Temperature_C <- as.numeric(if_else(is.na(joined_data_sub$CTD_Temperature_C), joined_data_sub$Sample_Temperature_C, joined_data_sub$CTD_Temperature_C))
+
+#######################
+#Dissolved Microcystin#
+#######################
+  #Follow same imputation as performed by Casey for pMC
+  joined_data_sub$Dissolved_Microcystin_ug_L_BDL_Replaced <- if_else(joined_data_sub$Dissolved_Microcystin_ug_L == "<0.1", as.numeric(0.1), as.numeric(joined_data_sub$Dissolved_Microcystin_ug_L))
+  
+#############
+#Phycocyanin#
+#############
+  #Manual imputation, changing <value to value
+  joined_data_sub <- joined_data_sub %>%
+                      mutate(Extracted_Phycocyanin_ug_L_Replaced = if_else(grepl("<", Extracted_Phycocyanin_ug_L), 
+                                                                           gsub("<", "", Extracted_Phycocyanin_ug_L), 
+                                                                           Extracted_Phycocyanin_ug_L) %>% as.numeric()) 
+
+#############################
+#Soluble Reactive Phosphorus#
+#############################
+  #Manual imputation, changing <value to value
+  joined_data_sub <- joined_data_sub %>%
+                      mutate(Soluble_Reactive_Phosphorus_ug_P_L_Replaced = if_else(grepl("<", Soluble_Reactive_Phosphorus_ug_P_L), 
+                                                                           gsub("<", "", Soluble_Reactive_Phosphorus_ug_P_L), 
+                                                                           Soluble_Reactive_Phosphorus_ug_P_L) %>% as.numeric()) 
+  
+#########
+#Ammonia#
+#########
+  #Manual imputation, changing <value to value
+  joined_data_sub <- joined_data_sub %>%
+                          mutate(Ammonia_ug_N_L_Replaced = if_else(grepl("<", Ammonia_ug_N_L), 
+                                                                           gsub("<", "", Ammonia_ug_N_L), 
+                                                                           Ammonia_ug_N_L) %>% as.numeric()) 
+
+#################
+#Nitrate+Nitrite#
+#################
+  #Manual imputation, changing <value to value
+  joined_data_sub <- joined_data_sub %>%
+                          mutate(Nitrate_Nitrite_mg_N_L_Replaced = if_else(grepl("<", `Nitrate_+_Nitrite_mg_N_L`), 
+                                                                           gsub("<", "", `Nitrate_+_Nitrite_mg_N_L`), 
+                                                                           `Nitrate_+_Nitrite_mg_N_L`) %>% as.numeric()) 
+
+#####
+#VSS#
+#####
+  joined_data_sub$Volatile_Suspended_Solids_mg_L <- as.numeric(joined_data_sub$Volatile_Suspended_Solids_mg_L)
+
+############################
+#Total Cyanobacteria - qPCR#
+############################
+  #log10 transform dependent variable: Total_Cyano_Copies_mL
+  joined_data_sub$log10_Total_Cyano_Copies_mL<-log10(as.numeric(joined_data_sub$Total_Cyano_Copies_mL))
+
+  #check what happened between log10 transformation
+  #View(joined_data_sub %>%
+  #        dplyr::select(Total_Cyano_Copies_mL, log10_Total_Cyano_Copies_mL))
+
+#############
+#mcyE - qPCR#
+#############
+  #log10 transform dependent variable: mcyE_Copies_mL
+  joined_data_sub$log10_mcyE_Copies_mL_BDL_Replaced<-log10(as.numeric(joined_data_sub$mcyE_Copies_mL_BDL_Replaced))
+  
+#Note: currently considering values as-is BDL
+
+#################
+#ADD N:P parameters
+#################
+#Particulate N:P#
+#################
+  #Calculate, assign particulate N:P ratio - add to dataframe (df1b)
+  joined_data_sub$Part_NP<-(joined_data_sub$Particulate_Organic_Nitrogen_mg_L / ((joined_data_sub$Total_Phosphorus_ug_P_L)-(joined_data_sub$Total_Dissolved_Phosphorus_ug_P_L)))
+  
+###############
+#Dissolved N:P#
+###############
+  #Calculate, assign dissolved N:P ratio - add to dataframe (df1b)
+  joined_data_sub$Diss_NP<-(((joined_data_sub$Nitrate_Nitrite_mg_N_L_Replaced) + (joined_data_sub$Ammonia_ug_N_L_Replaced)) / (joined_data_sub$Soluble_Reactive_Phosphorus_ug_P_L_Replaced))
+
+###############
+#Change -Inf in dataframe to 0 - caused by log10() of zero - Only one occurence in CTD_Photosynthetically_Active_Radiation_uE_m2_s
+###############
+joined_data_sub <- joined_data_sub %>%
+  mutate(across(everything(), ~ ifelse(is.infinite(.) & . < 0, 0, .)))
+
+```
+
+#Impute using MICE
+```{r}
+
+data1 <- joined_data_sub %>% dplyr::select(log10_sxtA_Copies_mL_BDL_Replaced, sxtA_Copies_mL_censored, Date_core, Comb_Temperature_C, CTD_Specific_Conductivity_uS_cm, CTD_Dissolved_Oxygen_mg_L, CTD_Photosynthetically_Active_Radiation_uE_m2_s, Turbidity_NTU, Particulate_Microcystin_ug_L_BDL_Replaced, Dissolved_Microcystin_ug_L_BDL_Replaced, Extracted_Phycocyanin_ug_L_Replaced, Extracted_Chlorophyll_a_ug_L, Total_Phosphorus_ug_P_L, Total_Dissolved_Phosphorus_ug_P_L, Soluble_Reactive_Phosphorus_ug_P_L_Replaced, Ammonia_ug_N_L_Replaced, Nitrate_Nitrite_mg_N_L_Replaced, Particulate_Organic_Carbon_mg_L, Particulate_Organic_Nitrogen_mg_L, Colored_Dissolved_Organic_Material_absorbance_m1_at_400nm, Total_Suspended_Solids_mg_L, Volatile_Suspended_Solids_mg_L, log10_Total_Cyano_Copies_mL, log10_mcyE_Copies_mL_BDL_Replaced, Part_NP, Diss_NP)
+
+# Specify variables to exclude from imputation
+variables_to_ignore_1 <- c('Date_core', 'sxtA_Copies_mL_censored', 'Part_NP', 'Diss_NP')  
+
+# Create a predictor matrix
+pred1 <- make.predictorMatrix(data1)
+
+# Set columns corresponding to variables_to_ignore to 0
+pred1[, variables_to_ignore_1] <- 0
+
+# Fit the GLM model using multiple imputations
+imp <- mice::mice(data1, predictorMatrix = pred1, seed = 5, m = 20)
+tbl1 <- complete(data = imp, 'long')
+
+dim(data1)
+dim(tbl1)
+View(tbl1)
+colSums(is.na(tbl1))
+
+```
+
+#Model 1
+```{r}
+
+parameters1 <- c("Comb_Temperature_C", "CTD_Specific_Conductivity_uS_cm", "CTD_Dissolved_Oxygen_mg_L", "CTD_Photosynthetically_Active_Radiation_uE_m2_s", "Turbidity_NTU", "Particulate_Microcystin_ug_L_BDL_Replaced", "Dissolved_Microcystin_ug_L_BDL_Replaced", "Extracted_Phycocyanin_ug_L_Replaced", "Extracted_Chlorophyll_a_ug_L", "Total_Phosphorus_ug_P_L", "Total_Dissolved_Phosphorus_ug_P_L", "Soluble_Reactive_Phosphorus_ug_P_L_Replaced", "Ammonia_ug_N_L_Replaced", "Nitrate_Nitrite_mg_N_L_Replaced", "Particulate_Organic_Carbon_mg_L", "Particulate_Organic_Nitrogen_mg_L", "Colored_Dissolved_Organic_Material_absorbance_m1_at_400nm", "Total_Suspended_Solids_mg_L", "Volatile_Suspended_Solids_mg_L", "log10_Total_Cyano_Copies_mL", "log10_mcyE_Copies_mL_BDL_Replaced", "Part_NP", "Diss_NP")
+
+fit_list <- list()  # Initialize an empty list to store the models
+model1 <- list( ) # Initialize an empty list to store combined models
+loo_auto <- list()  # Initialize an empty list to store LOO scores
+df <- tibble()      # Initialize an empty dataframe for final table results
+
+# prevent pop-up windows/questions
+options(buildtools.check = function(action) TRUE)
+
+# Run fit on loop - not combining (combine = FALSE), so that you can extract the LOO for each run later, combined using combined_models()
+for (param in parameters1) {
+  # Construct the formula dynamically
+  formula <- formula(paste("log10_sxtA_Copies_mL_BDL_Replaced | cens(sxtA_Copies_mL_censored) ~", param))
+  
+  # Run brm_multiple 
+  fit_imp <- brm_multiple(formula, data = imp, chains = 4, warmup = 1000, iter = 2000, combine = FALSE)
+  
+  # Store the individual model in the list (backup)
+  fit_list[[param]] <- fit_imp
+  
+  # Combine the model into object
+  model1[[param]] <- combine_models(mlist = fit_imp, check_data = FALSE)
+
+  # Get LOO for the combined model
+  loo_auto[[param]] <- brms::loo(model1[[param]])
+
+#Compile:
+#Intercept: Estimate, Estimate Error, l-95% CI, u-95% CI, Rhat, Bulk_ESS, Tail_ESS
+#Parameter: Estimate, Estimate Error, l-95% CI, u-95% CI, Rhat, Bulk_ESS, Tail_ESS
+#R-squared
+
+#Generate summary (for loop)
+summary_result <- summary(model1[[param]])
+r2 <- bayes_R2(model1[[param]])
+# Extract R-squared value
+param_r2 <- r2[1]
+
+# Extract model results
+fixed_effects_matrix <- summary_result$fixed
+
+# Convert the fixed effects to a tibble
+fixed_effects <- as_tibble(fixed_effects_matrix)
+
+# Add the parameter names as a new column
+fixed_effects <- fixed_effects %>%
+  add_column(Parameter = param,
+             Row = rownames(fixed_effects_matrix), .before = 1,
+             R_squared = param_r2,
+             Model_formula = paste("log10_sxtA_Copies_mL_BDL_Replaced | cens(sxtA_Copies_mL_censored) ~", param))
+
+df <- bind_rows(df, fixed_effects)
+
+}
+
+model1_output <- print(df) %>%
+                        arrange(-R_squared)
+View(model1_output)
+#Save objects
+saveRDS(model1, file="qPCR/model1_June12_24.RData")
+saveRDS(loo_auto, file="qPCR/loo_auto_model1_June12_24.RData")
+write_csv(model1_output, "qPCR/model1_output_June12_24.csv")
+#This concludes the first test of linear models, if rhat >1.01, consider transforming fixed variable and redo below
+model1_output <- read_csv("qPCR/model1_output_June12_24.csv")
+model1_read <- readRDS("qPCR/model1_June12_24.RData")
+model1_temp_plot <- plot(brms::conditional_effects(model1_read[["Comb_Temperature_C"]]), points=TRUE)
+
+model1_temp_plot_print <- model1_temp_plot[[1]] +
+  geom_hline(yintercept = log10(45), linetype = "dashed", color = "red") +
+  ylim(-7.5, 5)
+
+# Save as PDF
+#ggsave("qPCR/model1_temp_plot.pdf", plot = model1_temp_plot_print, width = 10, height = 6)
+
+#################
+#model1b
+#################
+#filter results with rhat 1.01 or greater
+model1_output_RhatCutoff <- model1_output %>%
+                                filter(Rhat >= 1.01) %>%
+                                dplyr::select(Parameter, Rhat) %>%
+                                distinct(Parameter)
+
+#identify parameters in Model 1 that had an rhat >=1.01.
+parameters1b_rhatcutoff <- model1_output_RhatCutoff$Parameter
+
+# Transform (log10()) parameters with rhat >= 1.01 in the MICE object
+imp1b <- imp  # Copy the mice object to preserve the original
+tbl1b_long <- complete(data = imp1b, 'long', include=TRUE) # Convert to long form
+
+# Generate new long transformed variables
+for(param in parameters1b_rhatcutoff){
+  param_name <- as.character(param)
+  tbl1b_long[[paste0("log10_", param_name)]] <- log10(tbl1b_long[[param_name]])
+}
+
+tbl1b_long <- tbl1b_long %>%
+  mutate(across(everything(), ~ ifelse(is.infinite(.) & . < 0, 0, .)))
+
+# Convert back to Mids
+imp1b_short <- as.mids(tbl1b_long)
+
+# Make parameters1b list for Model1b
+# Step 2: Identify new items from column names of tbl1b_long that are not in parameters1, as well as other relevant parameters
+parameters1b <- setdiff(colnames(tbl1b_long), c(parameters1, "Date_core", "sxtA_Copies_mL_censored", "log10_sxtA_Copies_mL_BDL_Replaced", ".imp", ".id"))
+
+fit_list1b <- list()  # Initialize an empty list to store the models
+model1b <- list() # Initialize an empty list to store combined models
+loo_auto1b <- list()  # Initialize an empty list to store LOO scores
+model1b_output_bind <- tibble()      # Initialize an empty dataframe for final table results
+
+# prevent pop-up windows/questions
+options(buildtools.check = function(action) TRUE)
+
+# Run fit on loop - not combining (combine = FALSE), so that you can extract the LOO for each run later, combined using combined_models()
+for (param in parameters1b) {
+  # Construct the formula dynamically
+  formula1b <- formula(paste("log10_sxtA_Copies_mL_BDL_Replaced | cens(sxtA_Copies_mL_censored) ~", param))
+  
+  # Run brm_multiple 
+  fit_imp1b <- brm_multiple(formula1b, data = imp1b_short, chains = 4, warmup = 1000, iter = 2000, combine = FALSE)
+  
+  # Store the individual model in the list (backup)
+  fit_list1b[[param]] <- fit_imp1b
+  
+  # Combine the model into object
+  model1b[[param]] <- combine_models(mlist = fit_imp1b, check_data = FALSE)
+
+  # Get LOO for the combined model
+  loo_auto1b[[param]] <- brms::loo(model1b[[param]])
+
+#Compile:
+#Intercept: Estimate, Estimate Error, l-95% CI, u-95% CI, Rhat, Bulk_ESS, Tail_ESS
+#Parameter: Estimate, Estimate Error, l-95% CI, u-95% CI, Rhat, Bulk_ESS, Tail_ESS
+#R-squared
+
+#Generate summary (for loop)
+summary_result1b <- summary(model1b[[param]])
+r2 <- bayes_R2(model1b[[param]])
+# Extract R-squared value
+param_r2 <- r2[1]
+
+# Extract model results
+fixed_effects_matrix <- summary_result1b$fixed
+
+# Convert the fixed effects to a tibble
+fixed_effects <- as_tibble(fixed_effects_matrix)
+
+# Add the parameter names as a new column
+fixed_effects <- fixed_effects %>%
+  add_column(Parameter = param,
+             Row = rownames(fixed_effects_matrix), .before = 1,
+             R_squared = param_r2,
+             Model_formula = paste("log10_sxtA_Copies_mL_BDL_Replaced | cens(sxtA_Copies_mL_censored) ~", param))
+
+model1b_output_bind <- bind_rows(model1b_output_bind, fixed_effects)
+
+}
+
+# View the final dataframe
+model1b_output <- print(model1b_output_bind) %>%
+                        arrange(-R_squared)
+
+#Save objects
+saveRDS(model1b, file="qPCR/model1b_June12_24.RData")
+saveRDS(loo_auto1b, file="qPCR/loo_auto1b_June12_24.RData")
+write_csv(model1b_output, "qPCR/model1b_output_June12_24.csv")
+#This concludes the second iteration of linear models, once again if rhat >1.01
+model1b_output <- read_csv("qPCR/model1b_output_June12_24.csv")
+model1b_read <- readRDS("qPCR/model1b_June12_24.RData")
+model1b_ammon_plot <- plot(brms::conditional_effects(model1b_read[["log10_Ammonia_ug_N_L_Replaced"]]), points=TRUE)
+
+model1b_ammon_plot_print <- model1b_ammon_plot[[1]] +
+  geom_hline(yintercept = log10(45), linetype = "dashed", color = "red") +
+  ylim(-7.5, 5)
+
+# Save as PDF
+#ggsave("qPCR/model1b_ammon_plot.pdf", plot = model1b_ammon_plot_print, width = 10, height = 6)
+
+model1_temp_plot_print
+model1b_ammon_plot_print
+
+library(ggpubr)
+model1_1b_temp_ammon_plot <- ggarrange(model1_temp_plot_print, model1b_ammon_plot_print)
+
+# Save merged plot as PDF
+ggsave("qPCR/model1_1b_temp_ammon_plot.pdf", plot = model1_1b_temp_ammon_plot, width = 20, height = 6)
+
+
+#BIND RESULTS AND MOVE ON!
+model1all_output <- bind_rows(model1_output, model1b_output)
+View(model1all_output %>%
+       dplyr::filter(Rhat <= 1.01))
+
+```
+
+#Model1c - Now add grouping variable (July 6 to September 19 and outside of dates)
+```{r}
+fit_list1c <- list()  # Initialize an empty list to store the models
+model1c <- list() # Initialize an empty list to store combined models
+loo_auto1c <- list()  # Initialize an empty list to store LOO scores
+model1c_output_bind <- tibble()      # Initialize an empty dataframe for final table results
+
+combined_parameters <- c(parameters1[!(parameters1 %in% parameters1b_rhatcutoff)], parameters1b) 
+
+# prevent pop-up windows/questions
+options(buildtools.check = function(action) TRUE)
+
+# Run fit on loop - not combining (combine = FALSE), so that you can extract the LOO for each run later, combined using combined_models()
+for (param in combined_parameters) {
+  # Construct the formula dynamically
+  formula1c <- formula(paste("log10_sxtA_Copies_mL_BDL_Replaced | cens(sxtA_Copies_mL_censored) ~", param, "+ (1 +", param, "| Date_core)"))
+  
+  # Run brm_multiple 
+  fit_imp1c <- brm_multiple(formula1c, data = imp1b_short, chains = 4, warmup = 1000, iter = 2000, combine = FALSE)
+  
+  # Store the individual model in the list (backup)
+  fit_list1c[[param]] <- fit_imp1c
+  
+  # Combine the model into object
+  model1c[[param]] <- combine_models(mlist = fit_imp1c, check_data = FALSE)
+
+  # Get LOO for the combined model
+  loo_auto1c[[param]] <- brms::loo(model1c[[param]])
+
+#Compile:
+#Intercept: Estimate, Estimate Error, l-95% CI, u-95% CI, Rhat, Bulk_ESS, Tail_ESS
+#Parameter: Estimate, Estimate Error, l-95% CI, u-95% CI, Rhat, Bulk_ESS, Tail_ESS
+#R-squared
+
+#Generate summary (for loop)
+summary_result1c <- summary(model1c[[param]])
+r2 <- bayes_R2(model1c[[param]])
+# Extract R-squared value
+param_r2 <- r2[1]
+
+# Extract model results
+fixed_effects_matrix <- summary_result1c$fixed
+
+# Convert the fixed effects to a tibble
+fixed_effects <- as_tibble(fixed_effects_matrix)
+
+# Add the parameter names as a new column
+fixed_effects <- fixed_effects %>%
+  add_column(Parameter = param,
+             Row = rownames(fixed_effects_matrix), .before = 1,
+             R_squared = param_r2,
+             Model_formula = paste("log10_sxtA_Copies_mL_BDL_Replaced | cens(sxtA_Copies_mL_censored) ~", param, "+ (1 +", param, "| Date_core)"))
+
+model1c_output_bind <- bind_rows(model1c_output_bind, fixed_effects)
+
+}
+
+# View the final dataframe
+model1c_output <- print(model1c_output_bind) %>%
+                        arrange(-R_squared)
+
+#Save objects
+saveRDS(model1c, file="qPCR/model1c_June13_24.RData")
+saveRDS(loo_auto1c, file="qPCR/loo_auto1c_June13_24.RData")
+write_csv(model1c_output, "qPCR/model1c_output_June13_24.csv")
+#This concludes the second iteration of linear models, once again if rhat >1.01
+model1c_output <- read_csv("qPCR/model1c_output_June13_24.csv")
+
+View(model1c_output)
+```
+
+###
+###Model2: Let's do loop for (+) two predictors - MATRIX!
+###
+```{r}
+#Select best parameters
+parameters_model2 <- c("Comb_Temperature_C", "log10_Ammonia_ug_N_L_Replaced")
+
+fit_list2 <- list()  # Initialize an empty list to store the models
+model2 <- list() # Initialize an empty list to store combined models
+loo_auto2 <- list()  # Initialize an empty list to store LOO scores
+model2_output_bind <- tibble()      # Initialize an empty dataframe for final table results
+
+# prevent pop-up windows/questions
+options(buildtools.check = function(action) TRUE)
+
+# Run fit on loop - not combining (combine = FALSE), so that you can extract the LOO for each run later, combined using combined_models()
+for (param in parameters_model2) {
+for (param2 in combined_parameters) {
+  # Construct the formula dynamically
+  formula2 <- formula(paste("log10_sxtA_Copies_mL_BDL_Replaced | cens(sxtA_Copies_mL_censored) ~", param, "+", param2))
+  
+  # Run brm_multiple 
+  fit_imp2 <- brm_multiple(formula2, data = imp1b_short, chains = 4, warmup = 1000, iter = 2000, combine = FALSE)
+  
+  # Store the individual model in the list (backup)
+  fit_list2[[paste(param, "+", param2)]] <- fit_imp2
+  
+  # Combine the model into object
+  model2[[paste(param, "+", param2)]] <- combine_models(mlist = fit_imp2, check_data = FALSE)
+
+  # Get LOO for the combined model
+  loo_auto2[[paste(param, "+", param2)]] <- brms::loo(model2[[paste(param, "+", param2)]])
+
+#Compile:
+#Intercept: Estimate, Estimate Error, l-95% CI, u-95% CI, Rhat, Bulk_ESS, Tail_ESS
+#Parameter: Estimate, Estimate Error, l-95% CI, u-95% CI, Rhat, Bulk_ESS, Tail_ESS
+#R-squared
+
+#Generate summary (for loop)
+summary_result2 <- summary(model2[[paste(param, "+", param2)]])
+r2 <- bayes_R2(model2[[paste(param, "+", param2)]])
+# Extract R-squared value
+param_r2 <- r2[1]
+
+# Extract model results
+fixed_effects_matrix <- summary_result2$fixed
+
+# Convert the fixed effects to a tibble
+fixed_effects <- as_tibble(fixed_effects_matrix)
+
+# Add the parameter names as a new column
+fixed_effects <- fixed_effects %>%
+  add_column(Parameter = paste(param, "+", param2),
+             Row = rownames(fixed_effects_matrix), .before = 1,
+             R_squared = param_r2,
+             Model_formula = paste("log10_sxtA_Copies_mL_BDL_Replaced | cens(sxtA_Copies_mL_censored) ~", param, "+", param2))
+
+model2_output_bind <- bind_rows(model2_output_bind, fixed_effects)
+
+}
+}
+
+# View the final dataframe
+model2_output <- print(model2_output_bind) %>%
+                        arrange(-R_squared)
+
+#Save objects
+saveRDS(model2, file="qPCR/model2_June17_24.RData")
+saveRDS(loo_auto2, file="qPCR/loo_auto2_June17_24.RData")
+write_csv(model2_output, "qPCR/model2_output_June17_24.csv")
+#This concludes the second iteration of linear models, once again if rhat >1.01
+model2_output <- read_csv("qPCR/model2_output_June17_24.csv")
+model2_read <- readRDS("qPCR/model2_June17_24.RData")
+model2_ammon_temp_plot <- plot(conditional_effects(model2_read[["log10_Ammonia_ug_N_L_Replaced + Comb_Temperature_C"]]), points=TRUE)
+model2_ammon_temp_plot
+
+View(model2_output)
+
+```
+###
+#Model3: Let's do loop for interaction (*) between two predictors - MATRIX!
+###
+```{r}
+fit_list3 <- list()  # Initialize an empty list to store the models
+model3 <- list() # Initialize an empty list to store combined models
+loo_auto3 <- list()  # Initialize an empty list to store LOO scores
+model3_output_bind <- tibble()      # Initialize an empty dataframe for final table results
+
+# prevent pop-up windows/questions
+options(buildtools.check = function(action) TRUE)
+
+# Run fit on loop - not combining (combine = FALSE), so that you can extract the LOO for each run later, combined using combined_models()
+for (param in parameters_model2) {
+for (param2 in combined_parameters) {
+  # Construct the formula dynamically
+  formula3 <- formula(paste("log10_sxtA_Copies_mL_BDL_Replaced | cens(sxtA_Copies_mL_censored) ~", param, "*", param2))
+  
+  # Run brm_multiple 
+  fit_imp3 <- brm_multiple(formula3, data = imp1b_short, chains = 4, warmup = 1000, iter = 2000, combine = FALSE)
+  
+  # Write out equation
+  equation <- paste0(param, "_interaction_", param2)
+  
+  # Store the individual model in the list (backup)
+  fit_list3[[equation]] <- fit_imp3
+  
+  # Combine the model into object
+  model3[[equation]] <- combine_models(mlist = fit_imp3, check_data = FALSE)
+
+  # Get LOO for the combined model
+  loo_auto3[[equation]] <- brms::loo(model3[[equation]])
+
+#Compile:
+#Intercept: Estimate, Estimate Error, l-95% CI, u-95% CI, Rhat, Bulk_ESS, Tail_ESS
+#Parameter: Estimate, Estimate Error, l-95% CI, u-95% CI, Rhat, Bulk_ESS, Tail_ESS
+#R-squared
+
+#Generate summary (for loop)
+summary_result3 <- summary(model3[[equation]])
+r2 <- bayes_R2(model3[[equation]])
+# Extract R-squared value
+param_r2 <- r2[1]
+
+# Extract model results
+fixed_effects_matrix <- summary_result3$fixed
+
+# Convert the fixed effects to a tibble
+fixed_effects <- as_tibble(fixed_effects_matrix)
+
+# Add the parameter names as a new column
+fixed_effects <- fixed_effects %>%
+  add_column(Parameter = equation,
+             Row = rownames(fixed_effects_matrix), .before = 1,
+             R_squared = param_r2,
+             Model_formula = paste("log10_sxtA_Copies_mL_BDL_Replaced | cens(sxtA_Copies_mL_censored) ~", param, "*", param2))
+
+model3_output_bind <- bind_rows(model3_output_bind, fixed_effects)
+}
+}
+
+# View the final dataframe
+model3_output <- print(model3_output_bind) %>%
+                        arrange(-R_squared)
+
+#Save objects
+saveRDS(model3, file="qPCR/model3_June21_24.RData")
+saveRDS(loo_auto3, file="qPCR/loo_auto3_June21_24.RData")
+write_csv(model3_output, "qPCR/model3_output_June21_24.csv")
+#This concludes the second iteration of linear models, once again if rhat >1.01
+model3_output <- read_csv("qPCR/model3_output_June21_24.csv")
+
+View(model3_output)
+```
+
+###
+###Model4: Let's do loop for (+) three predictors - MATRIX!
+###
+```{r}
+#Select best parameters
+parameter1_model4 <- "Comb_Temperature_C"
+parameter2_model4 <- "log10_Ammonia_ug_N_L_Replaced"
+
+#remove temp and ammonia from combined_parameters
+combined_parameters_m4 <- combined_parameters[!combined_parameters %in% c("Comb_Temperature_C", "log10_Ammonia_ug_N_L_Replaced")]
+
+fit_list4 <- list()  # Initialize an empty list to store the models
+model4 <- list() # Initialize an empty list to store combined models
+loo_auto4 <- list()  # Initialize an empty list to store LOO scores
+model4_output_bind <- tibble()      # Initialize an empty dataframe for final table results
+
+# prevent pop-up windows/questions
+options(buildtools.check = function(action) TRUE)
+
+# Run fit on loop - not combining (combine = FALSE), so that you can extract the LOO for each run later, combined using combined_models()
+for (param2 in combined_parameters_m4) {
+  # Construct the formula dynamically
+  formula4 <- formula(paste("log10_sxtA_Copies_mL_BDL_Replaced | cens(sxtA_Copies_mL_censored) ~", parameter1_model4, "+", parameter2_model4, "+", param2))
+  
+  # Run brm_multiple 
+  fit_imp4 <- brm_multiple(formula4, data = imp1b_short, chains = 4, warmup = 1000, iter = 2000, combine = FALSE)
+  
+  # Store the individual model in the list (backup)
+  fit_list4[[paste(parameter1_model4, "+", parameter2_model4, "+", param2)]] <- fit_imp4
+  
+  # Combine the model into object
+  model4[[paste(parameter1_model4, "+", parameter2_model4, "+", param2)]] <- combine_models(mlist = fit_imp4, check_data = FALSE)
+
+  # Get LOO for the combined model
+  loo_auto4[[paste(parameter1_model4, "+", parameter2_model4, "+", param2)]] <- brms::loo(model4[[paste(parameter1_model4, "+", parameter2_model4, "+", param2)]])
+
+#Compile:
+#Intercept: Estimate, Estimate Error, l-95% CI, u-95% CI, Rhat, Bulk_ESS, Tail_ESS
+#Parameter: Estimate, Estimate Error, l-95% CI, u-95% CI, Rhat, Bulk_ESS, Tail_ESS
+#R-squared
+
+#Generate summary (for loop)
+summary_result4 <- summary(model4[[paste(parameter1_model4, "+", parameter2_model4, "+", param2)]])
+r2 <- bayes_R2(model4[[paste(parameter1_model4, "+", parameter2_model4, "+", param2)]])
+# Extract R-squared value
+param_r2 <- r2[1]
+
+# Extract model results
+fixed_effects_matrix <- summary_result4$fixed
+
+# Convert the fixed effects to a tibble
+fixed_effects <- as_tibble(fixed_effects_matrix)
+
+# Add the parameter names as a new column
+fixed_effects <- fixed_effects %>%
+  add_column(Parameter = paste(parameter1_model4, "+", parameter2_model4, "+", param2),
+             Row = rownames(fixed_effects_matrix), .before = 1,
+             R_squared = param_r2,
+             Model_formula = paste("log10_sxtA_Copies_mL_BDL_Replaced | cens(sxtA_Copies_mL_censored) ~", parameter1_model4, "+", parameter2_model4, "+", param2))
+
+model4_output_bind <- bind_rows(model4_output_bind, fixed_effects)
+}
+
+
+# View the final dataframe
+model4_output <- print(model4_output_bind) %>%
+                        arrange(-R_squared)
+
+#Save objects
+saveRDS(model4, file="qPCR/model4_June18_24.RData")
+saveRDS(loo_auto4, file="qPCR/loo_auto4_June18_24.RData")
+write_csv(model4_output, "qPCR/model4_output_June18_24.csv")
+#This concludes the second iteration of linear models, once again if rhat >1.01
+model4_output <- read_csv("qPCR/model4_output_June18_24.csv")
+
+View(model4_output)
+
+```
+
+Combine loo files to do final model comparison
+```{r}
+
+model1_loo  <- readRDS(file="qPCR/loo_auto_model1_June12_24.RData")
+model1b_loo <- readRDS(file="qPCR/loo_auto1b_June12_24.RData")
+model1c_loo <- readRDS(file="qPCR/loo_auto1c_June13_24.RData")
+model2_loo  <- readRDS(file="qPCR/loo_auto2_June17_24.RData")
+model3_loo  <- readRDS(file="qPCR/loo_auto3_June21_24.RData")
+model4_loo  <- readRDS(file="qPCR/loo_auto4_June18_24.RData")
+
+loo_bind <- c(model1_loo, model1b_loo, model1c_loo, model2_loo, model3_loo)
+
+loo_comp <- loo_compare(loo_bind)
+View(loo_comp)
+
+```
+
+```{r}
+
+model1_read <- readRDS(file="qPCR/model1_June12_24.RData")
+model1b_read <- readRDS(file="qPCR/model1b_June12_24.RData")
+model1c_read <- readRDS(file="qPCR/model1c_June13_24.RData")
+model2_read <- readRDS(file="qPCR/model2_June17_24.RData")
+model3_read <- readRDS(file="qPCR/model3_June21_24.RData")
+model4_read <- readRDS(file="qPCR/model4_June18_24.RData")
+
+summary(model1b_read[["log10_Ammonia_ug_N_L_Replaced"]])
+summary(model1_read[["Comb_Temperature_C"]])
+summary(model2_read[["log10_Ammonia_ug_N_L_Replaced + Comb_Temperature_C"]])
+summary(model2_read[["log10_Ammonia_ug_N_L_Replaced_Comb_Temperature_C"]])
+summary(model3_read[["Comb_Temperature_C_interaction_log10_Ammonia_ug_N_L_Replaced"]])
+View(model3_output)
+
+```
+
