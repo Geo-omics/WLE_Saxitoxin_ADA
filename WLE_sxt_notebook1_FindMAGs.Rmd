@@ -52,7 +52,7 @@ checkM <- tbl(pg, "checkm") %>%
 7.) Assign taxonomy (GTDBTK) and qc (CheckM) to bins of interest
 8.) Identify additional (non-sxt) ADA bins 
 9.) drep ADA bins
-10.) quick MAG counts
+10.) Quick MAG counts
 -------------
 
 1.) General + assembly setup
