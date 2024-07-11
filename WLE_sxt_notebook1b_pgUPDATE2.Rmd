@@ -1,0 +1,400 @@
+---
+title: "WLE Saxitoxin - Cleaned_up_notebook1"
+author: "Paul Den Uyl"
+date: "2023-10-27"
+output: html_document
+---
+
+Dependencies
+```{r setup, include=FALSE}
+
+#rm(list=ls());if(is.null(dev.list()["RStudioGD"])){} else {dev.off(dev.list()["RStudioGD"])};cat("\014")
+library(tidyverse)
+library(dplyr)
+library(here)
+library(vroom)
+library(ggmap)
+library(googledrive)
+library(readxl)
+library(Biostrings)
+library(lubridate)
+library(ggplot2)
+library(ggpmisc)
+knitr::opts_knit$set(root.dir = here::here("")) 
+
+#Load postgres server running on Alpena
+pg <- DBI::dbConnect(RPostgres::Postgres(),dbname = "XXX", host = "XXX", port = "XXX", user = "XXX", password = "XXX")
+
+#Load GLAMR GTDBTK data
+gtdb <- tbl(pg, "GTDB") %>% 
+  collect() %>% 
+  mutate(sample = str_extract(bin, "samp_\\d+")) %>%
+  rename(bin = "user_genome") %>%                    #change updated column title to old for consistency in code: April 15, 2024
+  relocate(user_genome, sample) 
+
+#Load GLAMR CheckM data
+checkM <- tbl(pg, "checkm") %>% 
+  collect() %>% 
+  mutate(sample = str_extract(bin, "samp_\\d+")) %>% 
+  rename(bin = "Bin Id") %>%                         #change updated column title to old for consistency in code: April 15, 2024
+  relocate(`Bin Id`, sample)
+
+```
+
+---Outline---
+1.) Setup of general GLAMR data and assemblies of interest for BLASTN, filter data set, symlink processed contigs
+2.) BLASTN GLAMR assemblies against sxtA,G,H,I
+3.) Analysis of BLASTN results ~ GLAMR metagenomic assemblies (contigs)
+4.) Setup of GLAMR raw bins of interest for BLASTN, symlink raw bins
+5.) BLASTN GLAMR raw bins against sxtA,G,H,I [same database]
+6.) Analysis of BLASTN results ~ GLAMR metagenomic bins (raw) (selected in  4.) 
+7.) Assign taxonomy (GTDBTK) and qc (CheckM) to bins of interest
+8.) Identify additional (non-sxt) ADA bins 
+9.) drep ADA bins
+-------------
+
+1.) General + assembly setup
+
+```{r}
+
+#Setup folder with sym links to all GLAMR sample assemblies of interest (for BLASTN analysis) 
+
+#Identify samples by set (i.e. project) of interest in GLAMR - Western Lake Erie only
+StudyID_to_use_WLE <- c("set_17", "set_18", "set_35", "set_36", "set_38", "set_40", "set_41", "set_42", "set_46", "set_51", "set_56")
+
+GLAMR_table_import <- read_xlsx("GLAMR_metadata/Great_Lakes_Omics_Datasets_Oct27_23.xlsx", sheet = "samples") #Import GLAMR metadata
+##
+#IMPORTANT NOTE
+##
+#Dataset includes all relevant samples.  In future code, updated sample tables may be used to add relevant information (i.e. collection date, station)
+
+GLAMR_sample_table <- GLAMR_table_import %>% 
+                              mutate(geo_loc_name = if_else(SampleID == "samp_4333", 
+                                                            "Lake Erie", geo_loc_name)) %>%              #change geo_loc_name from NA to Lake Erie for samp_4333 (KEEP!)
+                              filter(StudyID %in% StudyID_to_use_WLE,                                    #include only StudyID of interest (WLE)
+                              sample_type == "metagenome",                                               #include only data type of interest (metagenome)
+                              !(is.na(NOAA_Site) & is.na(geo_loc_name)),                                 #remove samples without NOAA_Site and geo_loc_name
+                              !(NOAA_Site %in% c("NA", "NF") & geo_loc_name %in% c("NA", "NF")),         #remove samples without NOAA_Site and geo_loc_name
+                              !grepl("SB.*", NOAA_Site),                                                 #remove samples from Sag. Bay
+                              SampleID != "samp_4304")                                                   #remove sample from Thames River
+
+GLAMR_sample_table %>% distinct(SampleID) %>% count #570 WLE metagenome samples in GLAMR - October 27, 2023
+
+#Gather all read paths to megahit assemblies to process through BLASTN, sym link to new path
+### assembly_paths <- system("ls /geomicro/data2/kiledal/GLAMR/data/omics/metagenomes/*/assembly/megahit_noNORM/final.contigs.renamed.fa",intern = TRUE) %>% 
+  tibble(read_path = .) %>% mutate(sample = read_path %>% str_remove(".*metagenomes/") %>% str_remove("/assembly.*"),
+         new_path = str_glue("blast/query/assemblies_vs_sxt/{sample}_final.contigs.renamed.fa")) %>% 
+         filter(sample %in% GLAMR_sample_table$SampleID)
+
+#symbolic link read_paths
+### file.symlink(assembly_paths$read_path, assembly_paths$new_path)
+
+```
+
+2.) BLASTN available assemblies against sxtA,G,H,I; - analyze results
+GLAMR contigs of interest symbolically linked to project directory
+BLASTN code written in Snakefile
+
+```{bash}
+
+### conda config --set channel_priority strict
+### snakemake run_blastn_assemblies_vs_sxt --profile config/snakemake_profiles/alpena --rerun-incomplete --dry-run 
+
+#assembly blastn results in /geomicro/data2/pdenuyl2/neurotoxin_thesis/FINAL2/blast/output/sxt/blastn/assemblies
+
+``` 
+
+3.) Analysis of BLASTN on GLAMR metagenomic assemblies (selected in  1.) assembly setup, above
+
+```{r}
+
+#Make list of blastn result outputs
+blastn_assemblies_list <-  system("ls blast/output/sxt/blastn/assemblies/*.tsv", intern=TRUE) 
+
+#Include only files with results in list
+blastn_assemblies_list_results <- blastn_assemblies_list[file.size(blastn_assemblies_list) > 0]
+
+#Bind rows of all contig blastn results
+blastn_assemblies_results_vroom <- vroom(blastn_assemblies_list_results, col_names = FALSE, show_col_types = FALSE, delim = "\t")
+
+#Add column names - corresponding to blast output flag -outfmt '6 std qcovs stitle'
+colnames(blastn_assemblies_results_vroom) <- c("qseqid", "sseqid", "pident", "length", "mismatch", "gapopen", "qstart", "qend", "sstart", "send", "evalue", "bitscore", "qcovs", "stitle")
+
+#Column name reference: https://www.metagenomics.wiki/tools/blast/blastn-output-format-6
+#1.  qseqid      query or source (e.g., gene) sequence id
+#2.  sseqid      subject  or target (e.g., reference genome) sequence id
+#3.  pident      percentage of identical matches
+#4.  length      alignment length (sequence overlap)
+#5.  mismatch    number of mismatches
+#6.  gapopen     number of gap openings
+#7.  qstart      start of alignment in query
+#8.  qend        end of alignment in query
+#9.  sstart      start of alignment in subject
+#10. send        end of alignment in subject
+#11. evalue      expect value
+#12. bitscore    bit score
+#13. qcovs       query coverage per subject
+#14. stitle      subject title
+
+#Make column for general toxin target id, toxin gene target, and sample ids
+blastn_assemblies_results_vroom_add <- blastn_assemblies_results_vroom %>% mutate(target = substr(sseqid, 1, 3),
+                                                                                  gene_target = substr(sseqid, 1,4),
+                                                                                  SampleID = qseqid %>% str_extract("samp_.*_") %>% str_sub(end = -2))
+
+#Combine BLASTN results and sample metadata from GLAMR
+#Call Sample_table from 1.) Setup, convert latitude/longitude values to numeric, add new column with sampling year
+GLAMR_assemblies_hits <- left_join(blastn_assemblies_results_vroom_add, GLAMR_sample_table, by = "SampleID") %>%
+  mutate(
+    lat = as.numeric(as.character(lat)),
+    lon = as.numeric(as.character(lon)),
+    year = as.integer(str_remove(collection_date, "-.*"))
+  )
+
+#Sort to get lowest e-value hit for each contig, remove contigs that match best to homolog/dummy sequences
+GLAMR_assemblies_hits <- GLAMR_assemblies_hits %>%
+  arrange(qseqid, evalue) %>%                        # sort the data by 'evalue' in ascending order for each qseqid
+  group_by(qseqid) %>%
+  filter(row_number() == 1) %>%                      # keep only one row for each qseqid (lowest evalue)
+  filter(target != "dum") %>%                        # remove "dum" targets
+  ungroup()
+
+GLAMR_assemblies_hits %>% distinct(SampleID)  #62 WLE samples hits to sxt gene target(s) of interest in GLAMR - October 2023
+View(GLAMR_assemblies_hits)
+
+```
+
+4.) Raw bin setup
+
+```{r}
+
+#Call GLAMR_contig_hits from 3.) to get samples with target of interest
+GLAMR_assemblies_hits
+
+#Make list of samples with target of interest
+GLAMR_samples_oi <- GLAMR_assemblies_hits %>% distinct(SampleID) 
+
+#This code will only process bins from samples identified with gene target of interest through blastn 3.)
+#ls command unable to handle lists this large, replaced with find
+raw_bin_paths <- system("find /geomicro/data2/kiledal/GLAMR/data/omics/metagenomes/samp_*/bins/all_raw_bins/ -path *.fa", intern=TRUE) %>% 
+  tibble(bin_path = .) %>% 
+  mutate(sample = bin_path %>% str_remove(".*metagenomes/") %>% str_remove("/bins.*"),
+         bin = bin_path %>% str_remove(".*all_raw_bins/") %>% str_remove(".fa"),
+         new_path = str_glue("blast/query/raw_bins_vs_sxt/{bin}.fa")) %>%
+         filter(sample %in% GLAMR_samples_oi$SampleID)
+
+raw_bin_paths %>% distinct(sample) %>% count #50 WLE samples hits to gene target of interest in GLAMR - October 2023
+
+#Symlink raw bins that were not processed through drep yet blast/query/raw_bins_w_sxt directory: 
+### file.symlink(raw_bin_paths$bin_path, raw_bin_paths$new_path) 
+#bins to be analyzed in /geomicro/data2/pdenuyl2/neurotoxin_thesis/FINAL2/blast/query/raw_bins_vs_sxt
+
+```
+
+5.) BLASTN raw bins against sxtA,G,H,I; - analyze results
+GLAMR bins of interest symbolically linked to project directory
+BLASTN code written in Snakefile
+
+```{bash}
+
+### conda config --set channel_priority strict
+### snakemake run_blastn_raw_bins_vs_sxt --profile config/snakemake_profiles/alpena --rerun-incomplete --dry-run 
+
+#raw bin blastn results in /geomicro/data2/pdenuyl2/neurotoxin_thesis/FINAL2/blast/output/sxt/blastn/raw_bins
+
+``` 
+
+6.) Analysis of BLASTN on GLAMR metagenomic bins selected in  4.) Raw bin setup
+```{r}
+
+#Make list of blastn outputs (raw bins)
+blastn_raw_bins_list <- system("find blast/output/sxt/blastn/raw_bins -path *.tsv", intern=TRUE) 
+
+#Include only files with results in list
+blastn_raw_bins_list_results <- blastn_raw_bins_list[file.size(blastn_raw_bins_list) > 0] %>% 
+    tibble(read_path = .) %>% 
+    mutate(bin = read_path %>% 
+                 str_remove(".*raw_bins/") %>% 
+                 str_remove("__blastn_db_sxt_AGHI_FINAL_raw_bin_blastn.tsv") %>% 
+                 str_sub(end = -1),
+           assembler = sapply(strsplit(bin, split='_', fixed=TRUE), function(x) (x[3])))
+
+#For loop to add new rows to combine BLASTN raw bin results (tsv)
+df_raw <- data.frame()
+
+for (i in 1:length(blastn_raw_bins_list_results$read_path)) {
+  output <- read_tsv(file = blastn_raw_bins_list_results$read_path[i], col_names = FALSE, show_col_types = FALSE) %>%
+  tibble(.) %>% 
+  mutate(bin = blastn_raw_bins_list_results$bin[i],
+         assembler = blastn_raw_bins_list_results$assembler[i])
+  df_raw <- rbind(df_raw,output)
+}
+blastn_raw_bin_results <- df_raw
+
+colnames(blastn_raw_bin_results) <- c("qseqid", "sseqid", "pident", "length", "mismatch", "gapopen", "qstart", "qend", "sstart", "send", "evalue", "bitscore", "qcovs", "stitle", "bin", "assembler")
+
+#Column name reference: https://www.metagenomics.wiki/tools/blast/blastn-output-format-6
+#1.  qseqid      query or source (e.g., gene) sequence id
+#2.  sseqid      subject  or target (e.g., reference genome) sequence id
+#3.  pident      percentage of identical matches
+#4.  length      alignment length (sequence overlap)
+#5.  mismatch    number of mismatches
+#6.  gapopen     number of gap openings
+#7.  qstart      start of alignment in query
+#8.  qend        end of alignment in query
+#9.  sstart      start of alignment in subject
+#10. send        end of alignment in subject
+#11. evalue      expect value
+#12. bitscore    bit score
+#13. qcovs       query coverage per subject
+#14. stitle      subject title
+#project specific columns
+#15. bin
+#16. assembler
+
+blastn_raw_bin_results_add <- blastn_raw_bin_results %>% 
+                                  mutate(target = substr(sseqid, 1, 3),
+                                         gene_target = substr(sseqid, 1,4), 
+                                         SampleID = qseqid %>% str_extract("samp_.*_") %>% str_sub(end = -2))
+
+#List unique targets, check data table
+unique(blastn_raw_bin_results_add$gene_target)
+
+#Sort to get lowest e-value hit for each contig, remove contigs that match best to homolog/dummy sequences
+GLAMR_hits_raw_bin <- blastn_raw_bin_results_add %>%
+  arrange(qseqid, evalue) %>%                        # sort the data by 'evalue' in ascending order for each qseqid
+  group_by(bin, qseqid) %>%
+  filter(row_number() == 1) %>%                      # keep only one row for each qseqid (lowest evalue)
+  filter(target != "dum") %>%                        # remove "dum" targets
+  ungroup()
+
+#Note: zero top blast hits (lowest e-value) belong to homolog/dummy sequences
+
+View(GLAMR_hits_raw_bin)
+
+#GLAMR_hits_raw provides BLASTN results for bins from samples identified as having gene targets of interest in original assembly blastn 3.).  The bins with hits next need to be sorted to determine the best/most complete bins for each sample/organism.  
+
+#side project (looking for sxtX)
+sxt_x_mapped <- c("samp_2151", "samp_2153", "samp_2158", "same_4338", "samp_4341", "samp_481", "samp_484", "samp_797")
+
+GLAMR_hits_raw_bin_sxtX <- GLAMR_hits_raw_bin %>%
+                                  filter(SampleID %in% sxt_x_mapped) %>%
+                                  distinct(bin, .keep_all = TRUE) %>%
+                                  select(SampleID, bin)
+
+library(glue)
+
+# Create the list using the bin and SampleID
+sxtX_bin_paths <- GLAMR_hits_raw_bin_sxtX %>%
+  mutate(
+    #current path
+    bin_path = glue("/geomicro/data2/kiledal/GLAMR/data/omics/metagenomes/{SampleID}/bins/all_raw_bins/{bin}.fa"),
+    # Construct the path using the bin and SampleID
+    new_path = glue("/geomicro/data2/pdenuyl2/scratch/sxtX/bins_oi/{bin}_ln.fa")
+  )
+
+#symbolic link read_paths
+file.symlink(sxtX_bin_paths$bin_path, sxtX_bin_paths$new_path)
+
+```
+
+7.) Assigning taxonomy (GTDBTK) and qc (CheckM) to bins of interest
+```{r}
+
+#gtdb table loaded in first chunk
+GLAMR_GTDB_samp_oi <- gtdb %>% filter(sample %in% GLAMR_hits_raw_bin$SampleID) # filter for only sample with sxt hits
+
+GLAMR_hits_raw_bin %>% distinct(SampleID) %>% count #50 WLE bins of interest in GLAMR - October 2023
+GLAMR_GTDB_samp_oi %>% distinct(sample) %>% count #50 corresponding GTDBTK analyses - October 2023
+
+#checkM table loaded in first chunk
+GLAMR_checkm_samp_oi <- checkM %>% filter(sample %in% GLAMR_hits_raw_bin$SampleID) # filter for only sample with sxt hits
+
+GLAMR_checkm_samp_oi %>% distinct(sample) %>% count #50 corresponding checkM analyses - October 2023
+
+#R combine GTDB and checkM results
+GTDB_checkm_GLAMR <- left_join(GLAMR_checkm_samp_oi, GLAMR_GTDB_samp_oi, by = c("Bin Id" = "user_genome")) %>%
+                              distinct(`Bin Id`, classification, Completeness, Contamination, `Strain heterogeneity`, .keep_all = TRUE)
+
+#Add to GLAMR_hits_raw_bin
+GLAMR_hits_raw_bin_GTDB_checkm <- left_join(GLAMR_hits_raw_bin, GTDB_checkm_GLAMR, by = c("bin" = "Bin Id"))
+
+#Filter GLAMR_hits_raw_bin_GTDB_checkm for CheckM quality
+GLAMR_hits_raw_bin_passqc <- GLAMR_hits_raw_bin_GTDB_checkm %>% 
+                                filter(Completeness >= 50 & Contamination <= 50)
+View(GLAMR_hits_raw_bin_passqc)
+
+
+#Took a look at all species level GTDBTK and CheckM annotations. Narrowed down to a single bin to focus on.  
+##Potential genomes with saxitoxin biosynthesis 
+#samp_471_concoct_280 - Dolichospermum sp000312705 (Primary)
+
+```
+
+8.) Additional ADA bins
+```{r}
+
+#Get back to all GTDBTK paths
+#gtdb table loaded in first chunk
+#Select only samples with that belong to the family "Nostocaceae"
+GTDB_bac_ada <- gtdb %>% 
+  filter(str_detect(classification, "d__Bacteria;p__Cyanobacteria;c__Cyanobacteriia;o__Cyanobacteriales;f__Nostocaceae")) # filter family of ADA clade
+
+#Get back to all checkM paths
+checkM
+
+#R combine GTDB filtered and checkM results
+GTDB_checkm_GLAMR_ada <- inner_join(checkM, GTDB_bac_ada, by = c("Bin Id" = "user_genome")) %>%
+                              distinct(`Bin Id`, classification, Completeness, Contamination, `Strain heterogeneity`, .keep_all = TRUE)
+
+#Filter GTDB_checkm_GLAMR_filter for CheckM quality
+GTDB_checkm_GLAMR_ada_passqc <- GTDB_checkm_GLAMR_ada %>% filter(Completeness >= 90 & Contamination <= 10)
+
+#Gather all read paths to ada bins to cluster by nucleotide similarity (remove similar bins), sym link to new path
+###read_paths_ada <- system("find /geomicro/data2/kiledal/GLAMR/data/omics/metagenomes/*/bins/all_raw_bins/ -path *.fa", intern=TRUE) %>% 
+          tibble(read_path = .) %>% 
+          mutate(bin_id = read_path %>% str_remove(".*all_raw_bins/") %>% str_remove(".fa.*"),
+                 sample = read_path %>% str_remove(".*metagenomes/") %>% str_remove("/bins.*"),
+                 new_path = str_glue("ada_bins/raw_bins/{bin_id}.fa")) %>%
+          filter(sample %in% GTDB_checkm_GLAMR_ada_passqc$sample.x &
+                 bin_id %in% GTDB_checkm_GLAMR_ada_passqc$`Bin Id`)
+
+###file.symlink(read_paths_ada$read_path, read_paths_ada$new_path) 
+#NOTE- NEVER FILTERED OUT NON-WLE BINS!
+          #For this study, only two MAGs from non-WLE sources were selected through drep, so I manually selected them out and reran.  
+```
+
+drep ADA bins
+```{bash}
+
+###conda config --set channel_priority strict
+###snakemake run_ada_drep --profile config/snakemake_profiles/alpena/ --keep-going --dry-run
+
+```
+
+Count number of samples, MAGs (<10% contam, >90% completeness), drep MAGs
+```{r}
+
+#Count the number of samples from WLE - same as chunk 1
+GLAMR_sample_table %>% distinct(SampleID) %>% count #570 WLE metagenome samples in GLAMR - October 27, 2023
+
+#Count the number of unique sample dates
+GLAMR_sample_table %>%
+  mutate(collection_date_new = collection_date %>% str_remove("T.*")) %>% 
+  distinct(collection_date_new) %>% count                                     #352 distinct sampling dates in GLAMR - October 27, 2023
+
+
+#Count number of raw bins linked to blast gene target of interest 
+raw_bin_paths_oi <- system("find blast/query/raw_bins_vs_sxt/ -path *.fa", intern=TRUE) %>% 
+  tibble(bin_path = .) %>% 
+  mutate(BinId = bin_path %>% str_remove(".*raw_bins_vs_sxt/") %>% str_remove(".fa"),
+         sample = BinId %>% str_extract("samp_\\d+")) #%>% 
+#filter(sample %in% GLAMR_sample_table$SampleID) #redundant, doesn't change result
+
+#Count the number of MAGs (<10% contamination, >90% completeness)
+GLAMR_GTDB_samp_WLE <- checkM %>% 
+                        filter(sample %in% raw_bin_paths_oi$sample) %>%
+                        distinct(`Bin Id`, .keep_all = TRUE) %>%
+                        filter(Completeness >= 90 & Contamination <= 10)
+
+```
+
