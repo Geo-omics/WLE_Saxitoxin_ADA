@@ -1,7 +1,8 @@
 ---
-title: "WLE Saxitoxin - Cleaned_up_notebook1"
+title: "Western Lake Erie - Saxitoxin - Notebook1 - Finding MAGs"
 author: "Paul Den Uyl"
 date: "2023-10-27"
+reformatted: "2024-07-11"
 output: html_document
 ---
 
@@ -42,7 +43,7 @@ checkM <- tbl(pg, "checkm") %>%
 ```
 
 ---Outline---
-1.) Setup of general GLAMR data and assemblies of interest for BLASTN, filter data set, symlink processed contigs
+1.) Setup of general GLAMR data and assemblies of interest for BLASTN, filter dataset, symlink processed contigs
 2.) BLASTN GLAMR assemblies against sxtA,G,H,I
 3.) Analysis of BLASTN results ~ GLAMR metagenomic assemblies (contigs)
 4.) Setup of GLAMR raw bins of interest for BLASTN, symlink raw bins
@@ -62,7 +63,7 @@ checkM <- tbl(pg, "checkm") %>%
 #Identify samples by set (i.e. project) of interest in GLAMR - Western Lake Erie only
 StudyID_to_use_WLE <- c("set_17", "set_18", "set_35", "set_36", "set_38", "set_40", "set_41", "set_42", "set_46", "set_51", "set_56")
 
-GLAMR_table_import <- read_xlsx("GLAMR_metadata/Great_Lakes_Omics_Datasets_Oct27_23.xlsx", sheet = "samples") #Import GLAMR metadata
+GLAMR_table_import <- read_xlsx("data/Great_Lakes_Omics_Datasets_Oct27_23.xlsx", sheet = "samples") #Import GLAMR metadata
 ##
 #IMPORTANT NOTE
 ##
@@ -78,16 +79,16 @@ GLAMR_sample_table <- GLAMR_table_import %>%
                               !grepl("SB.*", NOAA_Site),                                                 #remove samples from Sag. Bay
                               SampleID != "samp_4304")                                                   #remove sample from Thames River
 
-GLAMR_sample_table %>% distinct(SampleID) %>% count #570 WLE metagenome samples in GLAMR - October 27, 2023
+GLAMR_sample_table %>% distinct(SampleID) %>% count #570 WLE metagenomic samples in GLAMR sample table
 
 #Gather all read paths to megahit assemblies to process through BLASTN, sym link to new path
-### assembly_paths <- system("ls /geomicro/data2/kiledal/GLAMR/data/omics/metagenomes/*/assembly/megahit_noNORM/final.contigs.renamed.fa",intern = TRUE) %>% 
+assembly_paths <- system("ls /geomicro/data2/kiledal/GLAMR/data/omics/metagenomes/*/assembly/megahit_noNORM/final.contigs.renamed.fa",intern = TRUE) %>% 
   tibble(read_path = .) %>% mutate(sample = read_path %>% str_remove(".*metagenomes/") %>% str_remove("/assembly.*"),
          new_path = str_glue("blast/query/assemblies_vs_sxt/{sample}_final.contigs.renamed.fa")) %>% 
          filter(sample %in% GLAMR_sample_table$SampleID)
 
 #symbolic link read_paths
-### file.symlink(assembly_paths$read_path, assembly_paths$new_path)
+file.symlink(assembly_paths$read_path, assembly_paths$new_path)
 
 ```
 
@@ -98,7 +99,7 @@ BLASTN code written in Snakefile
 ```{bash}
 
 ### conda config --set channel_priority strict
-### snakemake run_blastn_assemblies_vs_sxt --profile config/snakemake_profiles/alpena --rerun-incomplete --dry-run 
+snakemake run_blastn_assemblies_vs_sxt --profile config/snakemake_profiles/alpena --rerun-incomplete  
 
 #assembly blastn results in /geomicro/data2/pdenuyl2/neurotoxin_thesis/FINAL2/blast/output/sxt/blastn/assemblies
 
@@ -197,7 +198,7 @@ BLASTN code written in Snakefile
 ```{bash}
 
 ### conda config --set channel_priority strict
-### snakemake run_blastn_raw_bins_vs_sxt --profile config/snakemake_profiles/alpena --rerun-incomplete --dry-run 
+snakemake run_blastn_raw_bins_vs_sxt --profile config/snakemake_profiles/alpena --rerun-incomplete 
 
 #raw bin blastn results in /geomicro/data2/pdenuyl2/neurotoxin_thesis/FINAL2/blast/output/sxt/blastn/raw_bins
 
@@ -273,28 +274,6 @@ View(GLAMR_hits_raw_bin)
 
 #GLAMR_hits_raw provides BLASTN results for bins from samples identified as having gene targets of interest in original assembly blastn 3.).  The bins with hits next need to be sorted to determine the best/most complete bins for each sample/organism.  
 
-#side project (looking for sxtX)
-sxt_x_mapped <- c("samp_2151", "samp_2153", "samp_2158", "same_4338", "samp_4341", "samp_481", "samp_484", "samp_797")
-
-GLAMR_hits_raw_bin_sxtX <- GLAMR_hits_raw_bin %>%
-                                  filter(SampleID %in% sxt_x_mapped) %>%
-                                  distinct(bin, .keep_all = TRUE) %>%
-                                  select(SampleID, bin)
-
-library(glue)
-
-# Create the list using the bin and SampleID
-sxtX_bin_paths <- GLAMR_hits_raw_bin_sxtX %>%
-  mutate(
-    #current path
-    bin_path = glue("/geomicro/data2/kiledal/GLAMR/data/omics/metagenomes/{SampleID}/bins/all_raw_bins/{bin}.fa"),
-    # Construct the path using the bin and SampleID
-    new_path = glue("/geomicro/data2/pdenuyl2/scratch/sxtX/bins_oi/{bin}_ln.fa")
-  )
-
-#symbolic link read_paths
-file.symlink(sxtX_bin_paths$bin_path, sxtX_bin_paths$new_path)
-
 ```
 
 7.) Assigning taxonomy (GTDBTK) and qc (CheckM) to bins of interest
@@ -322,7 +301,6 @@ GLAMR_hits_raw_bin_GTDB_checkm <- left_join(GLAMR_hits_raw_bin, GTDB_checkm_GLAM
 GLAMR_hits_raw_bin_passqc <- GLAMR_hits_raw_bin_GTDB_checkm %>% 
                                 filter(Completeness >= 50 & Contamination <= 50)
 View(GLAMR_hits_raw_bin_passqc)
-
 
 #Took a look at all species level GTDBTK and CheckM annotations. Narrowed down to a single bin to focus on.  
 ##Potential genomes with saxitoxin biosynthesis 
