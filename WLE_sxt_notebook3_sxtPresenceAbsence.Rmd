@@ -1,0 +1,384 @@
+---
+title: "Examination of sxt presence in bins"
+author: "Paul Den Uyl"
+date: "2023-11-12"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+#rm(list=ls());if(is.null(dev.list()["RStudioGD"])){} else {dev.off(dev.list()["RStudioGD"])};cat("\014")
+library(tidyverse)
+library(dplyr)
+library(here)
+library(vroom)
+library(ggmap)
+library(googledrive)
+library(readxl)
+library(Biostrings)
+library(lubridate)
+library(ggplot2)
+library(ggpmisc)
+library(Rsamtools)
+library(ggnewscale)
+library(furrr)
+knitr::opts_knit$set(root.dir = here::here("")) 
+```
+
+---Outline---
+1.) Run sxtWXD+A mapping on samp_471 reads through snakemake
+2.) Run blast on ADA bin reads for sxtA (INCLUDED IN TREE ONLY) through snakemake
+3.) Analyse ADA bin blast results for presence of sxtA (INCLUDED IN TREE ONLY) 
+4.) Create symbolic links for all WLE GLAMR samples for mapping of sxt operon
+5.) Map all WLE GLAMR sample raw reads to examine presence of sxt operon - snakemake
+6.) Analyze WLE GLAMR sample mapping results 
+7.) Plot percent coverage and mean coverage depth to confirm analysis parameters
+8.) Plot mapped sxt samples - coverage and % id for contigs & all sequences
+9.) Check peaks in pileup file
+-------------
+
+1.) Run snakemake mapping on samp_471 reads (primary bin: samp_471_concoct_280 - Dolichospermum sp000312705) to examine presence of sxtWXD and sxtA (positive control).  sxtWXD genes are of particular interest, because they are present in Aphan-NH5 sxt operon, but were not found initially in the WLE operon bin.  
+Refine code written in Snakefile 
+```{bash}
+conda config --set channel_priority strict
+snakemake run_read_mapping_471_sxtWXDA --profile config/snakemake_profiles/alpena/ #--dry-run
+#output: /geomicro/data2/pdenuyl2/neurotoxin_thesis/FINAL2/mapping/reads/samp_471_sxtWXDA/output/pileup
+#no further processing performed, enough in pileup text file for write up
+``` 
+
+Ran Nov. 13
+2.) Run snakemake blast on ADA bin reads (INCLUDED IN TREE ONLY) to examine presence of sxtA (positive control). Ensuring no bin has sxt operon that isn't already identified.  
+Refine code written in Snakefile 
+```{bash}
+conda config --set channel_priority strict
+snakemake run_blastn_GToTree_bins_vs_sxta --profile config/snakemake_profiles/alpena/ #--dry-run
+``` 
+
+3.) Analysis of BLASTN on ADA bins (INCLUDED IN TREE) (blasted in  2.), above
+```{r}
+#Make list of blastn outputs
+blastn_GToTree_bins_list <-  system("ls blast/output/sxt/blastn/GToTree_bins/*.tsv", intern=TRUE) 
+
+#Include only files with results in list
+blastn_GToTree_bins_list_results <- blastn_GToTree_bins_list[file.size(blastn_GToTree_bins_list) > 0]
+
+#Bind rows of all GToTree bin blastn results
+blastn_GToTree_bins_results_vroom <- vroom(blastn_GToTree_bins_list_results, col_names = FALSE, show_col_types = FALSE, delim = "\t")
+
+#Add column names - corresponding to blast output flag -outfmt '6 std qcovs stitle'
+colnames(blastn_GToTree_bins_results_vroom) <- c("qseqid", "sseqid", "pident", "length", "mismatch", "gapopen", "qstart", "qend", "sstart", "send", "evalue", "bitscore", "qcovs", "stitle")
+
+#Column name reference: https://www.metagenomics.wiki/tools/blast/blastn-output-format-6
+#1.  qseqid      query or source (e.g., gene) sequence id
+#2.  sseqid      subject  or target (e.g., reference genome) sequence id
+#3.  pident      percentage of identical matches
+#4.  length      alignment length (sequence overlap)
+#5.  mismatch    number of mismatches
+#6.  gapopen     number of gap openings
+#7.  qstart      start of alignment in query
+#8.  qend        end of alignment in query
+#9.  sstart      start of alignment in subject
+#10. send        end of alignment in subject
+#11. evalue      expect value
+#12. bitscore    bit score
+#13. qcovs       query coverage per subject
+#14. stitle      subject title
+
+View(blastn_GToTree_bins_results_vroom)
+#Results:
+#qseqid- 
+#  NZ_APIY01000369.1 (Dolichospermum circinale AWQC131C)
+#	 NZ_APIY01000471.1 (Dolichospermum circinale AWQC131C)
+#  samp_471_220425 (LE20-WE8)
+```
+
+4.) symlink samples for mapping sxt coverage check
+```{r}
+
+#Identify samples by set (i.e. project) of interest in GLAMR - Western Lake Erie only
+StudyID_to_use_WLE <- c("set_17", "set_18", "set_35", "set_36", "set_38", "set_40", "set_41", "set_42", "set_46", "set_51", "set_56")
+
+GLAMR_table_import <- read_xlsx("GLAMR_metadata/Great_Lakes_Omics_Datasets_Oct27_23.xlsx", sheet = "samples") #Import GLAMR metadata
+##
+#IMPORTANT NOTE
+##
+#Dataset includes all relevant samples.  In future code, updated sample tables may be used to add relevant information (i.e. collection date, station)
+
+GLAMR_sample_table <- GLAMR_table_import %>% 
+                              mutate(geo_loc_name = if_else(SampleID == "samp_4333", 
+                                                            "Lake Erie", geo_loc_name)) %>%              #change geo_loc_name from NA to Lake Erie for samp_4333 (KEEP!)
+                              filter(StudyID %in% StudyID_to_use_WLE,                                    #include only StudyID of interest (WLE)
+                              sample_type == "metagenome",                                               #include only data type of interest (metagenome)
+                              !(is.na(NOAA_Site) & is.na(geo_loc_name)),                                 #remove samples without NOAA_Site and geo_loc_name
+                              !(NOAA_Site %in% c("NA", "NF") & geo_loc_name %in% c("NA", "NF")),         #remove samples without NOAA_Site and geo_loc_name
+                              !grepl("SB.*", NOAA_Site),                                                 #remove samples from Sag. Bay
+                              SampleID != "samp_4304")                                                   #remove sample from Thames River
+
+GLAMR_sample_table %>% distinct(SampleID) %>% count #570 WLE metagenome samples in GLAMR - October 27, 2023
+
+#Gather all WLE GLAMR sample raw read paths, sym link to new path
+read_paths_raw_WLE <- system("ls /geomicro/data2/kiledal/GLAMR/data/omics/metagenomes/*/reads/decon_*_reads_fastp.fastq.gz",intern = TRUE) %>% 
+  tibble(read_path = .) %>% mutate(sample = read_path %>% str_remove(".*metagenomes/") %>% str_remove("/reads.*"),
+  		 dir = read_path %>% str_remove(".*/decon_") %>% str_remove("_reads.*"),
+         new_path = str_glue("/geomicro/data2/pdenuyl2/neurotoxin_thesis/FINAL2/mapping/reads/GLAMR_sxtAll_mm2/reads/{sample}__{dir}.fastq.gz")) %>% 
+         filter(sample %in% GLAMR_sample_table$SampleID)
+
+n_distinct(read_paths_raw_WLE$sample) # 530 unique samples with raw reads to symbolic link - October 27, 2023
+
+#symbolic link read_paths
+##file.symlink(read_paths_raw_WLE$read_path, read_paths_raw_WLE$new_path)
+
+```
+
+5.) Perform sxt coverage check on three contigs (kept seperate) via mapping
+```{r}
+
+#Database GLAMR_sxtAll.fa created by trimming ends off contigs (3) to remove non-sxt genes.  Contigs trimmed at sxtPER & sxtE, sxtD(partial) & sxtN, sxtG & sxtL.
+###conda config --set channel_priority strict
+###snakemake run_read_mapping_GLAMRraw_sxtAll_mm2 --profile config/snakemake_profiles/alpena/ --dry-run 
+
+```
+
+6.) Determine contig and operon (subset) % id and coverage - minimap2 - updated Oct. 25, 2023
+```{r}
+
+# reference sequence import
+ref_seq <- Biostrings::readDNAStringSet("mapping/reads/GLAMR_sxtAll_mm2/database/GLAMRsxtAll.fa") %>%
+    as.character() %>%
+    data.frame(ref_base = ., seqnames = names(.)) %>%
+    mutate(seq_length = nchar(ref_base)) %>%
+    separate_longer_position(ref_base, width = 1) %>%
+    group_by(seqnames) %>%
+    mutate(pos = row_number()) %>%
+    ungroup() 
+
+# function to generate bam stats - reference cover & % id
+bam_stats <- function(bam_path){
+
+  # read in bam file
+  bam <- Rsamtools::BamFile(file = bam_path,
+                            index = paste0(bam_path,".bai"))
+  
+  pileup_ref_join <- Rsamtools::pileup(bam,pileupParam = PileupParam(distinguish_strands = FALSE)) %>% 
+    full_join(ref_seq, ., by = c("seqnames", "pos"))  # join pileup file and alignment reference
+
+out_bp_depth <- pileup_ref_join %>%
+      group_by(seqnames, pos, seq_length) %>% 
+    arrange(seqnames, pos, desc(count)) %>% 
+      mutate(depth = sum(count),                          # alignment depth at each position
+             rel_abund_base = count/depth) %>%            # relative abundance of base read at position compared to all reads at position
+    group_by(seqnames) %>% 
+      mutate(bam_path = bam_path,
+             sample_id = bam_path %>% str_remove(".*bam/") %>% str_remove("_GLAMRsxtAll.*")) %>%
+    ungroup()
+
+out_percent_id <- out_bp_depth %>%
+      group_by(seqnames) %>%
+    filter(nucleotide == ref_base) %>%                    # only look at bases that match reference
+      mutate(percent_id_ref_contig = (sum(count) / sum(depth)) * 100) %>%    #all reads matching ref / total reads for sequence            
+    ungroup()
+
+out_cover <- out_bp_depth %>%
+  filter(count >= 1, na.rm = TRUE) %>%                   # keep only positions with at least 1 count
+  distinct(seqnames, pos, .keep_all = TRUE) %>%
+    group_by(seqnames) %>%
+      mutate(percent_cover = (n()/seq_length) * 100) %>%      # number of bases matching reference divided by reference sequence length 
+    ungroup()
+
+out <- left_join(out_percent_id, out_cover)  # merge %id and cover data tables
+
+}
+
+# create list of bam paths to process
+bam_paths <- system("ls mapping/reads/GLAMR_sxtAll_mm2/output/bam/*.bam", intern = TRUE) %>%
+  tibble(bam_path = .) 
+
+# run for bam stats!
+#plan(multisession, workers = 8) #start multisession
+##GLAMR_bam_stats_mm2 <- future_map_dfr(bam_paths$bam_path, ~ bam_stats(.x), .progress = TRUE) # last run: Dec 09, 2023
+#plan(sequential) #stop multisession
+
+#Remove rows with NA for 'percent_cover'
+##GLAMR_bam_stats_mm2 <-GLAMR_bam_stats_mm2 %>% filter(!is.na(percent_cover))
+##write_csv(GLAMR_bam_stats_mm2, file = "mapping/reads/GLAMR_sxtAll_mm2/output/GLAMR_bam_stats_mm2.csv") # last run/save: Dec 09, 2023
+GLAMR_bam_stats_mm2 <- read_csv(file = "mapping/reads/GLAMR_sxtAll_mm2/output/GLAMR_bam_stats_mm2.csv", col_names = TRUE)
+
+# data table of samples with >60% cover for all three references GLAMR_bam_stats_60_cov_mm2
+GLAMR_bam_stats_60_cov_mm2 <- GLAMR_bam_stats_mm2 %>%
+    group_by(sample_id, seqnames) %>% 
+      select(seqnames, sample_id, percent_cover, percent_id_ref_contig) %>% # skim down data table to just data for each ref
+      distinct() %>%
+    group_by(sample_id) %>%
+      mutate(gene_present = percent_cover > 60,                       # does reference sequence have > 60% coverage?
+             all_present = all(gene_present)) %>%                     # do all three references have > 60% coverage?
+    subset(all_present == TRUE)                                       # keep only samples that have >60% coverage for all three references
+View(GLAMR_bam_stats_60_cov_mm2)
+
+# data table of samples with >60% cover for all three references, but coverage from references is combined (one combined reference)
+GLAMR_bam_stats_60_cov_comb_ref <- GLAMR_bam_stats_mm2 %>%
+    subset(sample_id %in% unique(GLAMR_bam_stats_60_cov_mm2$sample_id)) %>%    # subset only samples that have >60% cover for all three references
+    group_by(sample_id) %>%
+      mutate(seq_length_comb_ref = sum(unique(seq_length)),                        # sum unique reference lengths (each unique sequence) to get length of combined reference 
+             percent_cover_comb_ref = (sum(count>0) / seq_length_comb_ref) * 100,                      # number of bases matching combined reference divided by combined reference sequence length
+             percent_id_comb_ref = (sum(count) / sum(depth)) * 100) %>%            # all reads matching combined ref / total reads for combined ref sequence
+      reframe(                                                                     # skim down data table to just data for each sample
+        sample_id = unique(sample_id),
+        percent_cover_comb_ref = unique(percent_cover_comb_ref),
+        percent_id_comb_ref  = unique( percent_id_comb_ref))
+  
+View(GLAMR_bam_stats_60_cov_comb_ref)
+#Summary: 22 samples, all >97% combined ref ID - December 9, 2023
+
+########################################################################################
+#UPDATE TO MOST CURRENT GLAMR metadata (be careful) : last performed - December 9, 2023#
+########################################################################################
+#Download most recent GLAMR sample table and process for only samples of interest (filtered by StudyID) 
+#GLAMR sample table with only samples of interest
+# Get latest table from google drive
+#as_id("https://docs.google.com/spreadsheets/d/1z2IajV0Ay1lRjH9d0ibNBuf8PY0IbtEz/edit#gid=349037648") %>% 
+#  drive_download("GLAMR_metadata/Great_Lakes_Omics_Datasets_Dec9_23_notebook3bONLY.xlsx")
+########################################################################################
+#ADDS samp_4333 metadata (date)
+
+GLAMR_sample_table_Dec9_23 <- read_xlsx("GLAMR_metadata/Great_Lakes_Omics_Datasets_Dec9_23_notebook3bONLY.xlsx", sheet = "samples") #Import GLAMR metadata
+
+GLAMR_sample_table_sample_id_Dec9_23 <- GLAMR_sample_table_Dec9_23 %>% rename("SampleID" = "sample_id")
+GLAMR_sample_table_sxt_samps_left <- left_join(GLAMR_bam_stats_60_cov_comb_ref, GLAMR_sample_table_sample_id_Dec9_23, by = "sample_id") %>%
+                                        mutate(collection_date = collection_date %>% str_remove("T.*")) %>%
+                                        select(sample_id, percent_cover_comb_ref, percent_id_comb_ref, lat, lon, collection_date, NOAA_Site) %>%
+                                        dplyr::rename(percent_cover_all_ref = percent_cover_comb_ref,
+                                               percent_id_all_ref = percent_id_comb_ref)
+unique(GLAMR_sample_table_sxt_samps_left$collection_date) 
+
+#final step, format data table of samples with >60% cover for all three references: GLAMR_bam_stats_60_cov_mm2, and add to dataframe sxt_samps
+GLAMR_bam_stats_60_cov_mm2_PERCENT_COVER <- GLAMR_bam_stats_60_cov_mm2 %>% 
+                                                select(seqnames, sample_id, percent_cover) %>%
+                                                pivot_wider(names_from = seqnames, values_from = percent_cover) %>%
+                                                dplyr::rename(contig_220425_trim_percent_cover = samp_471_220425_trim,
+                                                              contig_266508_trim_percent_cover = samp_471_266508_trim,
+                                                              contig_36365_trim_percent_cover = samp_471_36365_trim)
+
+GLAMR_bam_stats_60_cov_mm2_PERCENT_ID <- GLAMR_bam_stats_60_cov_mm2 %>% 
+                                                select(seqnames, sample_id, percent_id_ref_contig) %>%
+                                                pivot_wider(names_from = seqnames, values_from = percent_id_ref_contig) %>%
+                                                dplyr::rename(contig_220425_trim_percent_id = samp_471_220425_trim,
+                                                              contig_266508_trim_percent_id = samp_471_266508_trim,
+                                                              contig_36365_trim_percent_id = samp_471_36365_trim)
+
+PERCENT_COV_ID_COMB <- left_join(GLAMR_bam_stats_60_cov_mm2_PERCENT_COVER, GLAMR_bam_stats_60_cov_mm2_PERCENT_ID, by = "sample_id")
+
+GLAMR_sample_table_sxt_samps_left_PERCENT_COVER_ID <-  left_join(GLAMR_sample_table_sxt_samps_left, PERCENT_COV_ID_COMB, by = "sample_id") 
+
+#write_csv(file = "GLAMR_metadata/sxt_perCOV_perID_mm2.csv", x = GLAMR_sample_table_sxt_samps_left_PERCENT_COVER_ID)
+
+```
+
+7.) Plot percent coverage and mean coverage depth to confirm analysis parameters
+```{r}
+
+GLAMR_bam_stats_mm2_2 <- GLAMR_bam_stats_mm2 %>%
+  group_by(seqnames, sample_id) %>%
+  reframe(percent_cover = percent_cover,
+           mean_cov_depth_refmatch = mean(count, na.rm=TRUE)) %>% 
+  group_by(sample_id) %>%
+      mutate(gene_present = percent_cover > 40,                    
+             all_present = all(gene_present)) %>%                     
+    subset(all_present == TRUE) %>%
+  distinct()
+
+ggplot(GLAMR_bam_stats_mm2_2 , aes(x = percent_cover, y = mean_cov_depth_refmatch, fill = sample_id)) +
+  geom_point(shape = 21, color = "black") +
+  facet_wrap("seqnames") +
+  scale_y_log10() +
+  labs(
+    title = "Percent coverage vs. mean coverage depth",
+    x = "Percent coverage",
+    y = "Mean coverage depth"
+  )
+
+```
+From this plot, there doesn't seem to be a huge correlation between coverage depth and percent coverage when percent coverage is <90%.  If all three contigs have cover >60% I would consider them.  Can readdress this in the future.  Sticking with 60% for now.  
+
+8.) Plot mapped sxt samples
+```{r}
+
+# Plot cover and % id of all samples with all three sxt operons - select sxt(+) samples first 
+mapped_sxt <- unique(GLAMR_sample_table_sxt_samps_left_PERCENT_COVER_ID$sample_id) 
+
+GLAMR_bam_mapping_plot_df <- GLAMR_bam_stats_mm2 %>%
+                                  filter(sample_id %in% mapped_sxt) %>%
+                                  group_by(sample_id, seqnames) %>% 
+                                  mutate(group_id = (pos-1) %/% 10) %>%  # Create a grouping variable for intervals of 10
+                                  group_by(sample_id, seqnames, group_id) %>%
+                                  mutate(rel_abund_base_10 = mean(rel_abund_base)) %>%
+                                  ungroup() 
+
+Seq36365_pos_list <- tibble(
+  pos = rep(seq(1, 7443), length(mapped_sxt)),
+  sample_id = rep(mapped_sxt, each = 7443)) 
+Seq36365 <- subset(GLAMR_bam_mapping_plot_df, seqnames == "samp_471_36365_trim") %>%
+              left_join(Seq36365_pos_list, ., by = c("pos", "sample_id")) %>%
+                 mutate(count = ifelse(is.na(count), 0, count))
+
+Seq220425_pos_list <- tibble(
+  pos = rep(seq(1, 6957), length(mapped_sxt)),
+  sample_id = rep(mapped_sxt, each = 6957)) 
+Seq220425 <- subset(GLAMR_bam_mapping_plot_df, seqnames == "samp_471_220425_trim") %>%
+              left_join(Seq220425_pos_list, ., by = c("pos", "sample_id")) %>%
+                 mutate(count = ifelse(is.na(count), 0, count))
+
+Seq266508_pos_list <- tibble(
+  pos = rep(seq(1, 7515), length(mapped_sxt)),
+  sample_id = rep(mapped_sxt, each = 7515)) 
+Seq266508 <- subset(GLAMR_bam_mapping_plot_df, seqnames == "samp_471_266508_trim") %>%
+              left_join(Seq266508_pos_list, ., by = c("pos", "sample_id")) %>%
+                 mutate(count = ifelse(is.na(count), 0, count))
+
+# Function to create the ggplot
+create_pileups_plot <- function(data, title) {
+  ggplot(data, aes(x = pos)) +
+    geom_line(aes(y = count), color = "red") +
+    geom_line(aes(y = rel_abund_base_10 * 100), color = "blue") +
+    facet_wrap(~sample_id) +
+    scale_y_continuous(
+      name = "Read count",
+      sec.axis = sec_axis(~./100, name = "Relative abundance of bases\nmatching reference", breaks = c(0, 0.25, 0.5, 0.75, 1), labels = c(0, 0.25, 0.5, 0.75, 1))
+    ) +
+    labs(title = title) +
+    xlab("Position (bp)")
+}
+
+# List of data frames and corresponding titles
+data_frames <- list(Seq36365, Seq220425, Seq266508)
+titles <- c("Metagenomic reads mapped to reference contig 36365_trim",
+            "Metagenomic reads mapped to reference contig 220425_trim",
+            "Metagenomic reads mapped to reference contig 266508_trim")
+
+# Loop through data frames and create plots
+plots <- lapply(seq_along(data_frames), function(i) {
+  create_pileups_plot(data_frames[[i]], titles[i])
+})
+
+# Display the plots
+print(plots[[1]])  # Use print to display individual plots
+print(plots[[2]])
+print(plots[[3]])
+
+# Use ggsave to save the ggplot as a PDF
+ggsave(filename = "/geomicro/data2/pdenuyl2/neurotoxin_thesis/FINAL2/figs/sxt_cover_id_1.pdf", plot = plots[[1]], device = "pdf", width = 10, height = 7.5)
+ggsave(filename = "/geomicro/data2/pdenuyl2/neurotoxin_thesis/FINAL2/figs/sxt_cover_id_2.pdf", plot = plots[[2]], device = "pdf", width = 10, height = 7.5)
+ggsave(filename = "/geomicro/data2/pdenuyl2/neurotoxin_thesis/FINAL2/figs/sxt_cover_id_3.pdf", plot = plots[[3]], device = "pdf", width = 10, height = 7.5)
+
+```
+
+9.) Check peaks in pileups_plot_266508
+```{r}
+
+# samp_471_266508_trimmed import
+samp_471_266508_peak <- Biostrings::readDNAStringSet("mapping/reads/GLAMR_sxtAll_mm2/database/GLAMRsxtAll.fa") %>%
+    Biostrings::subseq(., 3232, 3452) %>%
+    data.frame(sequence = ., seqnames = names(.)) %>%
+    subset(seqnames == "samp_471_266508_trim") %>%
+    as.data.frame()
+ View(samp_471_266508_peak)
+
+```
