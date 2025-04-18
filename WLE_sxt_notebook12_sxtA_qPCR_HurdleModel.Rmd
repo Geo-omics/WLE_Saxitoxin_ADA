@@ -1,0 +1,552 @@
+---
+title: "Hurdle model adaptation for SxtA - clean notebook 12 - qPCR models"
+author: "Paul Den Uyl"
+date: "2024-02-28"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+
+#rm(list=ls());if(is.null(dev.list()["RStudioGD"])){} else {dev.off(dev.list()["RStudioGD"])};cat("\014")
+
+library(rstan)
+library(bayesplot)
+library(brms)
+library(readr)
+library(dplyr)
+library(pROC)
+library(forcats)
+library(mice)
+library(VIM)
+library(furrr)
+library(tidyverse)
+library(ggpubr)
+
+```
+
+## Import Data and Format Dependent Variable (sxtA_Copies_mL) ##
+```{r}
+
+joined_data <- read_csv("qPCR/Joined_qPCR_and_Water_Quality_data.csv") 
+
+#Keep only samples with qPCR data
+   joined_data_sub <- joined_data %>% filter(!is.na(sxtA_Copies_Rxn)) 
+   
+#Recode a new variable that has zeros for the below-detects
+joined_data_sub$sxtA_Copies_mL_BDL_Replaced_With_Zeros <- with(joined_data_sub,ifelse(as.numeric(sxtA_Copies_Rxn)>=45&!(sxtA_Copies_Rxn == "BD")&!is.na(sxtA_Copies_Rxn),sxtA_Copies_mL_BDL_Replaced,0)) #Per Phytoxigene instructions, select 45 copies/rxn and above (Rao's code does 50, shown in sxtA_Copies_mL)
+
+```
+
+#Sort independent data 
+```{r}
+###
+#List of independent variables to consider:
+#Ammonia
+#Chlorophyll a
+#Colored Dissolved Organic Material
+#Dissolved Microcystin
+#Dissolved N:P
+#Dissolved Oxygen
+#mcyE 
+#Nitrate Nitrite
+#Particulate Microcystin
+#Particulate N:P
+#Particulate Organic Carbon
+#Particulate Organic Nitrogen
+#Photosynthetically Active Radiation
+#Phycocyanin
+#Soluble Reactive Phosphorus
+#Specific Conductivity
+#Temperature
+#Total Cyanobacteria
+#Total Dissolved Phosphorus
+#Total Phosphorus
+#Total_Suspended_Solids
+#Turbidity
+#Volatile Suspended Solids
+#Particulate N:P
+#Dissolved N:P
+
+#################### 
+#Sample Temperature# 
+#################### 
+  #Combine Sample_Temperature_C & CTD_Temperature_C
+  joined_data_sub$Comb_Temperature_C <- as.numeric(if_else(is.na(joined_data_sub$CTD_Temperature_C), joined_data_sub$Sample_Temperature_C, joined_data_sub$CTD_Temperature_C))
+
+#######################
+#Dissolved Microcystin#
+#######################
+  #Follow same imputation as performed by Casey for pMC
+  joined_data_sub$Dissolved_Microcystin_ug_L_BDL_Replaced <- if_else(joined_data_sub$Dissolved_Microcystin_ug_L == "<0.1", as.numeric(0.1), as.numeric(joined_data_sub$Dissolved_Microcystin_ug_L))
+  
+#############
+#Phycocyanin#
+#############
+  #Manual imputation, changing <value to value
+  joined_data_sub <- joined_data_sub %>%
+                      mutate(Extracted_Phycocyanin_ug_L_Replaced = if_else(grepl("<", Extracted_Phycocyanin_ug_L), 
+                                                                           gsub("<", "", Extracted_Phycocyanin_ug_L), 
+                                                                           Extracted_Phycocyanin_ug_L) %>% as.numeric()) 
+
+#############################
+#Soluble Reactive Phosphorus#
+#############################
+  #Manual imputation, changing <value to value
+  joined_data_sub <- joined_data_sub %>%
+                      mutate(Soluble_Reactive_Phosphorus_ug_P_L_Replaced = if_else(grepl("<", Soluble_Reactive_Phosphorus_ug_P_L), 
+                                                                           gsub("<", "", Soluble_Reactive_Phosphorus_ug_P_L), 
+                                                                           Soluble_Reactive_Phosphorus_ug_P_L) %>% as.numeric()) 
+  
+#########
+#Ammonia#
+#########
+  #Manual imputation, changing <value to value
+  joined_data_sub <- joined_data_sub %>%
+                          mutate(Ammonia_ug_N_L_Replaced = if_else(grepl("<", Ammonia_ug_N_L), 
+                                                                           gsub("<", "", Ammonia_ug_N_L), 
+                                                                           Ammonia_ug_N_L) %>% as.numeric()) 
+
+#################
+#Nitrate+Nitrite#
+#################
+  #Manual imputation, changing <value to value
+  joined_data_sub <- joined_data_sub %>%
+                          mutate(Nitrate_Nitrite_mg_N_L_Replaced = if_else(grepl("<", `Nitrate_+_Nitrite_mg_N_L`), 
+                                                                           gsub("<", "", `Nitrate_+_Nitrite_mg_N_L`), 
+                                                                           `Nitrate_+_Nitrite_mg_N_L`) %>% as.numeric()) 
+
+#####
+#VSS#
+#####
+  joined_data_sub$Volatile_Suspended_Solids_mg_L <- as.numeric(joined_data_sub$Volatile_Suspended_Solids_mg_L)
+
+############################
+#Total Cyanobacteria - qPCR#
+############################
+  #log10 transform dependent variable: Total_Cyano_Copies_mL
+  joined_data_sub$log10_Total_Cyano_Copies_mL<-log10(as.numeric(joined_data_sub$Total_Cyano_Copies_mL))
+
+  #check what happened between log10 transformation
+  #View(joined_data_sub %>%
+  #        dplyr::select(Total_Cyano_Copies_mL, log10_Total_Cyano_Copies_mL))
+
+#############
+#mcyE - qPCR#
+#############
+  #log10 transform dependent variable: mcyE_Copies_mL
+  joined_data_sub$log10_mcyE_Copies_mL_BDL_Replaced<-log10(as.numeric(joined_data_sub$mcyE_Copies_mL_BDL_Replaced))
+  
+#Note: currently considering values as-is BDL
+
+#################
+#ADD N:P parameters
+#################
+#Particulate N:P#
+#################
+  #Calculate, assign particulate N:P ratio - add to dataframe (df1b)
+  joined_data_sub$Part_NP <- joined_data_sub$Particulate_Organic_Nitrogen_mg_L / 
+                           ((joined_data_sub$Total_Phosphorus_ug_P_L - 
+                             joined_data_sub$Total_Dissolved_Phosphorus_ug_P_L) / 1000)
+
+  
+###############
+#Dissolved N:P#
+###############
+  #Calculate, assign dissolved N:P ratio - add to dataframe (df1b)
+  joined_data_sub$Diss_NP <- ((joined_data_sub$Nitrate_Nitrite_mg_N_L_Replaced + 
+                             (joined_data_sub$Ammonia_ug_N_L_Replaced / 1000)) / 
+                             (joined_data_sub$Soluble_Reactive_Phosphorus_ug_P_L_Replaced / 1000))
+
+#######################
+#Specific Conductivity#
+#######################
+#Replace values below 100 with NA in the specified column
+joined_data_sub$CTD_Specific_Conductivity_uS_cm[joined_data_sub$CTD_Specific_Conductivity_uS_cm < 100] <- NA
+
+```
+
+#log10 transform variables
+```{r}
+#Not transformed 
+#sxtA_Copies_mL_BDL_Replaced, log10_Total_Cyano_Copies_mL, log10_mcyE_Copies_mL_BDL_Replaced
+
+list_to_log10_transform <- c("Comb_Temperature_C", "CTD_Specific_Conductivity_uS_cm", "CTD_Dissolved_Oxygen_mg_L", "CTD_Photosynthetically_Active_Radiation_uE_m2_s", "Turbidity_NTU", "Particulate_Microcystin_ug_L_BDL_Replaced", "Dissolved_Microcystin_ug_L_BDL_Replaced", "Extracted_Phycocyanin_ug_L_Replaced", "Extracted_Chlorophyll_a_ug_L", "Total_Phosphorus_ug_P_L", "Total_Dissolved_Phosphorus_ug_P_L", "Soluble_Reactive_Phosphorus_ug_P_L_Replaced", "Ammonia_ug_N_L_Replaced", "Nitrate_Nitrite_mg_N_L_Replaced", "Particulate_Organic_Carbon_mg_L", "Particulate_Organic_Nitrogen_mg_L", "Colored_Dissolved_Organic_Material_absorbance_m1_at_400nm", "Total_Suspended_Solids_mg_L", "Volatile_Suspended_Solids_mg_L", "Part_NP", "Diss_NP")
+
+joined_data_sub_log10 <- joined_data_sub
+
+# Log10 transform each variable and create new columns
+for (variable in list_to_log10_transform) {
+  new_column_name <- paste("log10", variable, sep = "_")
+  joined_data_sub_log10 <- joined_data_sub_log10 %>%
+    mutate(!!new_column_name := log10(!!sym(variable)))
+}
+
+###############
+#Change -Inf in dataframe to 0 - caused by log10() of zero - Only one occurence in CTD_Photosynthetically_Active_Radiation_uE_m2_s
+###############
+joined_data_sub_log10 <- joined_data_sub_log10 %>%
+  mutate(across(everything(), ~ ifelse(is.infinite(.) & . < 0, 0, .)))
+
+#View(joined_data_sub_log10)
+
+```
+
+#Impute using MICE
+```{r}
+
+data1 <- joined_data_sub_log10 %>% dplyr::select(sxtA_Copies_mL_BDL_Replaced_With_Zeros, log10_Comb_Temperature_C, log10_CTD_Specific_Conductivity_uS_cm, log10_CTD_Dissolved_Oxygen_mg_L, log10_CTD_Photosynthetically_Active_Radiation_uE_m2_s, log10_Turbidity_NTU, log10_Particulate_Microcystin_ug_L_BDL_Replaced, log10_Dissolved_Microcystin_ug_L_BDL_Replaced, log10_Extracted_Phycocyanin_ug_L_Replaced, log10_Extracted_Chlorophyll_a_ug_L, log10_Total_Phosphorus_ug_P_L, log10_Total_Dissolved_Phosphorus_ug_P_L, log10_Soluble_Reactive_Phosphorus_ug_P_L_Replaced, log10_Ammonia_ug_N_L_Replaced, log10_Nitrate_Nitrite_mg_N_L_Replaced, log10_Particulate_Organic_Carbon_mg_L, log10_Particulate_Organic_Nitrogen_mg_L, log10_Colored_Dissolved_Organic_Material_absorbance_m1_at_400nm, log10_Total_Suspended_Solids_mg_L, log10_Volatile_Suspended_Solids_mg_L, log10_Total_Cyano_Copies_mL, log10_mcyE_Copies_mL_BDL_Replaced, log10_Part_NP, log10_Diss_NP)
+
+# Specify variables to exclude from imputation
+variables_to_ignore_1 <- c('log10_Part_NP', 'log10_Diss_NP')  
+
+# Create a predictor matrix
+pred1 <- make.predictorMatrix(data1)
+
+# Set columns corresponding to variables_to_ignore to 0
+pred1[, variables_to_ignore_1] <- 0
+
+# Fit the GLM model using multiple imputations
+imp <- mice::mice(data1, predictorMatrix = pred1, seed = 5, m = 50)
+
+test_df <- mice::complete(imp, "long", include = TRUE)
+View(test_df)
+View(data1)
+```
+
+#Model 1
+```{r}
+
+parameters1 <- c("log10_Comb_Temperature_C", "log10_CTD_Specific_Conductivity_uS_cm", "log10_CTD_Dissolved_Oxygen_mg_L", "log10_CTD_Photosynthetically_Active_Radiation_uE_m2_s", "log10_Turbidity_NTU", "log10_Particulate_Microcystin_ug_L_BDL_Replaced", "log10_Dissolved_Microcystin_ug_L_BDL_Replaced", "log10_Extracted_Phycocyanin_ug_L_Replaced", "log10_Extracted_Chlorophyll_a_ug_L", "log10_Total_Phosphorus_ug_P_L", "log10_Total_Dissolved_Phosphorus_ug_P_L", "log10_Soluble_Reactive_Phosphorus_ug_P_L_Replaced", "log10_Ammonia_ug_N_L_Replaced", "log10_Nitrate_Nitrite_mg_N_L_Replaced", "log10_Particulate_Organic_Carbon_mg_L", "log10_Particulate_Organic_Nitrogen_mg_L", "log10_Colored_Dissolved_Organic_Material_absorbance_m1_at_400nm", "log10_Total_Suspended_Solids_mg_L", "log10_Volatile_Suspended_Solids_mg_L", "log10_Total_Cyano_Copies_mL", "log10_mcyE_Copies_mL_BDL_Replaced", "log10_Part_NP", "log10_Diss_NP")
+
+fit_list <- list()  # Initialize an empty list to store the models
+model1 <- list() # Initialize an empty list to store combined models
+loo_auto <- list()  # Initialize an empty list to store LOO scores
+waic_result <- list()  # Initialize an empty list to store wAIC
+model1_output <- tibble()      # Initialize an empty dataframe for final table results
+
+# prevent pop-up windows/questions
+options(buildtools.check = function(action) TRUE)
+
+# Run fit on loop - not combining (combine = FALSE), so that you can extract the LOO for each run later, combined using combined_models()
+for (param in parameters1) {
+
+# Construct the formula parts
+main_formula <- paste0("sxtA_Copies_mL_BDL_Replaced_With_Zeros ~ ", param)
+hurdle_formula <- paste0("hu ~ ", param)
+
+# Run brm_multiple with the correct formula
+fit_imp <- brm_multiple(
+  bf(main_formula, hurdle_formula),
+  family = hurdle_lognormal(),
+  data = imp,
+  chains = 4,
+  warmup = 1000,
+  iter = 2000,
+  combine = FALSE
+)
+  # Add WAIC criterion to each model in the list
+  fit_imp <- lapply(fit_imp, function(model) add_criterion(model, "waic"))
+  
+  # Store the individual model in the list (backup)
+  fit_list[[param]] <- fit_imp
+  
+  # Combine the model into object
+  model1[[param]] <- combine_models(mlist = fit_imp, check_data = FALSE)
+
+  # Get LOO for the combined model
+  loo_auto[[param]] <- brms::loo(model1[[param]])
+  
+  # Extract LOO elpd estimate from the combined model
+  loo_estimate <- loo_auto[[param]]$estimates["elpd_loo", "Estimate"]
+  
+  # Extract LOO from the combined model
+  loo_se <- loo_auto[[param]]$estimates["elpd_loo", "SE"]
+  
+  # Extract wAIC from the combined model
+  waic_result[[param]] <- model1[[param]]$criteria$waic
+  waic_value <- waic_result[[param]]$estimates["waic", "Estimate"]
+
+#Generate summary (for loop)
+summary_result <- summary(model1[[param]])
+
+# Extract model results
+fixed_effects_matrix <- summary_result$fixed
+# Convert the fixed effects to a tibble
+fixed_effects <- as_tibble(fixed_effects_matrix)
+
+# Add the parameter names as a new column
+fixed_effects <- fixed_effects %>%
+  add_column(Parameter = param,
+             Row = rownames(fixed_effects_matrix), .before = 1,
+             Model_formula = paste0(main_formula, ", ", hurdle_formula),
+             wAIC = waic_value,
+             loo_est = loo_estimate,
+             loo_se = loo_se)
+
+model1_output <- bind_rows(model1_output, fixed_effects) 
+
+}
+
+#Save objects 
+#saveRDS(model1, file="qPCR/model1_Sept14_24.RData")
+#saveRDS(loo_auto, file="qPCR/loo_auto_model1_Sept14_24.RData")
+#write_csv(model1_output, "qPCR/model1_output_Sept14_24.csv")
+#This concludes the first test of linear models, if rhat >1.01, consider transforming fixed variable and redo below
+model1_output_read <- read_csv("qPCR/model1_output_Sept14_24.csv")
+model1_read <- readRDS("qPCR/model1_Sept14_24.RData")
+
+```
+
+#Check model priors used
+```{r}
+
+# Getting the prior summary
+lapply(model1_read, prior_summary)
+
+```
+
+Plot fig 1 & 2 (slope / hu slope)
+```{r}
+
+parameters1_reorganized <- c("log10_Ammonia_ug_N_L_Replaced", 
+                             "log10_Diss_NP",
+                             "log10_CTD_Dissolved_Oxygen_mg_L",
+                             "log10_Extracted_Chlorophyll_a_ug_L", 
+                             "log10_Extracted_Phycocyanin_ug_L_Replaced", 
+                             "log10_mcyE_Copies_mL_BDL_Replaced", 
+                             "log10_Nitrate_Nitrite_mg_N_L_Replaced", 
+                             "log10_Particulate_Microcystin_ug_L_BDL_Replaced", 
+                             "log10_Part_NP",
+                             "log10_Particulate_Organic_Carbon_mg_L", 
+                             "log10_Particulate_Organic_Nitrogen_mg_L", 
+                             "log10_CTD_Photosynthetically_Active_Radiation_uE_m2_s", 
+                             "log10_Soluble_Reactive_Phosphorus_ug_P_L_Replaced",
+                             "log10_Comb_Temperature_C",
+                             "log10_Turbidity_NTU",
+                             "log10_Total_Cyano_Copies_mL",
+                             "log10_Total_Dissolved_Phosphorus_ug_P_L", 
+                             "log10_Total_Phosphorus_ug_P_L")
+
+#############################
+#Slope and errors - figure 1#
+#############################
+
+# Initialize an empty dataframe
+slope_df <- data.frame(
+  Variable = character(),
+  Estimate = numeric(),
+  Q2.5 = numeric(),
+  Q97.5 = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# Loop through the parameters
+for (param in parameters1_reorganized) {
+  # Extract the fixed effects for the model
+  fixed_effects <- fixef(model1_read[[param]])
+  
+  # Extract the slope (coefficient) and 95% credible interval for param
+  slope_info <- fixed_effects[param, c("Estimate", "Q2.5", "Q97.5")]
+  
+  # Add the slope_info to the dataframe
+  slope_df <- rbind(slope_df, data.frame(
+    Variable = param,
+    Estimate = slope_info["Estimate"],
+    Q2.5 = slope_info["Q2.5"],
+    Q97.5 = slope_info["Q97.5"],
+    stringsAsFactors = FALSE
+  ))
+  
+  # Dynamically assign the slope to an object name (optional)
+  assign(paste0("slope_info_", param), slope_info)
+  
+}
+
+fixef(model1_read[["log10_Ammonia_ug_N_L_Replaced"]])
+
+fig1_slope <- ggplot(slope_df, aes(y = factor(Variable, levels = rev(parameters1_reorganized)), 
+                                   x = Estimate)) +
+  geom_point(shape = 18, size = 5) +  
+  geom_errorbarh(aes(xmin = Q2.5, xmax = Q97.5), height = 0.25) +  
+  geom_vline(xintercept = 0, color = "red", linetype = "dashed", linewidth = 1, alpha = 0.5) +
+  labs(y = "Environmental parameters", x = "Estimate of slope when sxtA is detectable")  # Set x and y-axis labels
+
+print(fig1_slope)
+
+#ggsave("qPCR/fig1_slope_Sept23_reorganized.pdf", fig1_slope, width = 8, height = 6) 
+
+#############################
+#hu - odds ratio - figure 2#
+#############################
+
+# Initialize an empty dataframe
+or_df <- data.frame(
+  Variable = character(),
+  Estimate = numeric(),
+  Q2.5 = numeric(),
+  Q97.5 = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# Loop through the parameters
+for (param in parameters1_reorganized) {
+  # Extract the fixed effects for the model
+  fixed_effects <- fixef(model1_read[[param]])
+  
+  # Extract the slope (coefficient) and 95% credible interval for param
+  or_info <- fixed_effects[paste0("hu_",param), c("Estimate", "Q2.5", "Q97.5")]
+  
+  # Reverse the slope for ease of interpretation: 
+    #Previously: positive hu slope = proportion of values below the sxtA gc/mL limit of detection increases
+    #Adjusting to: negative hu slope = proportion of values below the sxtA gc/mL limit of detection decreases OR the proportion of values ABOVE the sxtA gc/mL limit of detection increases
+  or_info_rev <- or_info * -1
+  
+  
+  # Add the slope_info to the dataframe
+  or_df <- rbind(or_df, data.frame(
+    Variable = param,
+    Estimate = or_info_rev["Estimate"],
+    Q2.5 = or_info_rev["Q2.5"],
+    Q97.5 = or_info_rev["Q97.5"],
+    stringsAsFactors = FALSE
+  ))
+  
+  # Dynamically assign the slope to an object name (optional)
+  #assign(paste0("hu_info_rev", param), or_info_rev)
+  
+}
+
+#fixef(model1_read[["log10_Comb_Temperature_C"]])
+
+fig2_or <- ggplot(or_df, aes(y = factor(Variable, levels = rev(parameters1_reorganized)), 
+                                   x = Estimate)) +
+  geom_point(shape = 18, size = 5) +  
+  geom_errorbarh(aes(xmin = Q2.5, xmax = Q97.5), height = 0.25) +  
+  geom_vline(xintercept = 0, color = "red", linetype = "dashed", linewidth = 1, alpha = 0.5) +
+  labs(y = "Environmental parameters", x = "Change in log odds ratio per unit change in log predictor")  # Set x and y-axis labels
+
+print(fig2_or)
+
+ggsave("qPCR/fig2_huslope_Sept25_reorganized_rev.pdf", fig2_or, width = 10, height = 6) 
+
+```
+
+Plot loop - panels of logistic regressions and hu
+```{r}
+
+fit_hurdle_list <- list() #Initialize an empty list to store model/hu combined fit plots
+
+# Run fit on loop - not combining (combine = FALSE), so that you can extract the LOO for each run later, combined using combined_models()
+
+for (param in parameters1_reorganized) {
+
+# Extract conditional effects data including raw data points
+raw_data <- plot(conditional_effects(model1_read[[param]]), points = TRUE)[[1]]
+raw_points_df <- raw_data$layers[[1]]$data %>%
+                  tibble()
+raw_points_df_noZero <- raw_points_df %>%
+                      filter(resp__ != 0)             #Remove sxtA values = 0
+model_fit_df <- raw_data$data %>% tibble()
+
+xaxis_min <- min(model_fit_df[,1])
+xaxis_max <- max(model_fit_df[,1])
+
+raw_point_plot <- ggplot(data = raw_points_df_noZero) +
+                        geom_point(aes_string(x = param, y = "resp__"), size = 2.5) +
+                        ggplot2::scale_y_continuous(trans = 'log10', 
+                                limits = c(0.1, 15000),
+                                breaks = c(1, 10, 100, 1000, 10000),
+                                labels = c('0', '10', '100', '1000', '10000')) +
+                        theme_minimal() # Specify appropriate breaks for the log scale
+
+comb_plot <- raw_point_plot + 
+                  geom_line(data = model_fit_df, aes_string(x = param, y = "estimate__"), linewidth = 1, color = "red") +
+                  geom_ribbon(data = model_fit_df, aes_string(x = param, ymin = "lower__", ymax = "upper__"), alpha = 0.2) +
+                  scale_x_continuous(limits = c(xaxis_min, xaxis_max)) +
+                  labs(y = "sxtA gc/mL") +  # Updated y-axis label
+                  theme(panel.grid.minor = element_blank(),
+                        axis.text.x = element_text(size = 12),
+                        axis.text.y = element_text(size = 12))  # Remove minor grid lines
+comb_plot 
+
+#COMPARE comb_plot 
+
+#Plot2
+#Casey's version:
+compareCG2 <-  plot(conditional_effects(model1_read[[param]]), dpar="hu")[[1]]+
+                          ggplot2::scale_y_continuous(trans = 'log10', 
+                                limits = c(0.1, 15000),
+                                breaks = c(1, 10, 100, 1000, 10000),
+                                labels = c('0', '10', '100', '1000', '10000')) +
+                        ylim(c(0,1)) +
+                        theme_minimal()  # Specify appropriate breaks for the log scale
+
+raw_data_hu <- plot(conditional_effects(model1_read[[param]], dpar="hu"))
+str(raw_data_hu)
+# Extract the data from the plot
+raw_data_hu_df <- raw_data_hu[[1]]$data %>% tibble() %>%
+                            mutate(estimate__rev = 1 - estimate__,  #reverse orientation of plot to show proportion of values below the sxtA gc/mL limit of detection decreases OR the proportion of values ABOVE the sxtA gc/mL limit of detection increases
+                                   lower__rev = 1 - lower__,
+                                   upper__rev = 1 - upper__)
+
+raw_hu_plot <- ggplot(data = raw_data_hu_df) +
+                  geom_line(aes_string(x = param, y = "estimate__rev"), linewidth = 1, color = "blue") +
+                  geom_ribbon(aes_string(x = param, ymin = "lower__rev", ymax = "upper__rev"), alpha = 0.2) +
+                  scale_x_continuous(limits = c(xaxis_min, xaxis_max)) 
+
+raw_hu_plot
+
+# Add points to hu_plot
+  # work with raw_points_df from plot1
+  # when sxtA is >0, point at top - when <0, point at bottom
+raw_points_df2 <- raw_points_df %>% 
+                      mutate(dot = if_else(resp__==0, 0, 1))
+
+hu_plot <- raw_hu_plot +
+  geom_jitter(data = subset(raw_points_df2, dot == 0), 
+              aes_string(x = param, y = 0), 
+              width = 0, height = 0.05, color = "grey") +  # Jittered for dot == 0
+  geom_jitter(data = subset(raw_points_df2, dot == 1), 
+              aes_string(x = param, y = 1), 
+              width = 0, height = 0.05, color = "black") +  # Jittered for dot == 1
+  scale_x_continuous(limits = c(xaxis_min, xaxis_max)) +
+  theme_minimal() +
+  theme(panel.grid.minor = element_blank(),
+        axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12)) +  # Remove minor grid lines
+  labs(y = "Predicted probability of\nsxtA gc/mL above detection")
+
+hu_plot
+
+####STACK PLOTS!####
+comb_hu_plot_loop <- ggarrange(comb_plot, hu_plot,
+          ncol = 1,
+          heights = c(3, 1.5),
+          align = "v") # `comb_plot` will take up 3 times the height of `hu_plot`
+
+fit_hurdle_list[[param]] <- comb_hu_plot_loop
+
+}
+print(fit_hurdle_list) 
+
+# Arrange the plots in a 5x5 grid using do.call to unpack the list
+combined_plot <- do.call(ggarrange, c(fit_hurdle_list, ncol = 5, nrow = 5))
+
+# Display the combined plot
+combined_plot
+
+ggsave("qPCR/comb_hu_plot_panel2_Sept25_reorganized_rev.pdf", combined_plot, width = 25, height = 30) 
+
+```
+
+Direct compare plots (loo_compare()):
+```{r}
+
+loo_auto_read <- readRDS(file="qPCR/loo_auto_model1_Sept14_24.RData")
+
+loo_compare(loo_auto_read)
+#Warning: Difference in performance potentially due to chance.See McLatchie and Vehtari (2023) for details. 
+
+```
+

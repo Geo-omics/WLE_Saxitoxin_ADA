@@ -33,7 +33,6 @@ knitr::opts_knit$set(root.dir = here::here(""))
 6.) Analyze WLE GLAMR sample mapping results 
 7.) Plot percent coverage and mean coverage depth to confirm analysis parameters
 8.) Plot mapped sxt samples - coverage and % id for contigs & all sequences
-9.) Check peaks in pileup file
 -------------
 
 1.) Run snakemake mapping on samp_471 reads (primary bin: samp_471_concoct_280 - Dolichospermum sp000312705) to examine presence of sxtWXD and sxtA (positive control).  sxtWXD genes are of particular interest, because they are present in Aphan-NH5 sxt operon, but were not found initially in the WLE operon bin.  
@@ -97,7 +96,7 @@ View(blastn_GToTree_bins_results_vroom)
 #Identify samples by set (i.e. project) of interest in GLAMR - Western Lake Erie only
 StudyID_to_use_WLE <- c("set_17", "set_18", "set_35", "set_36", "set_38", "set_40", "set_41", "set_42", "set_46", "set_51", "set_56")
 
-GLAMR_table_import <- read_xlsx("data/Great_Lakes_Omics_Datasets_Oct27_23.xlsx", sheet = "samples") #Import GLAMR metadata
+GLAMR_table_import <- read_xlsx("GLAMR_metadata/Great_Lakes_Omics_Datasets_Oct27_23.xlsx", sheet = "samples") #Import GLAMR metadata
 ##
 #IMPORTANT NOTE
 ##
@@ -239,9 +238,9 @@ View(GLAMR_bam_stats_60_cov_comb_ref)
 ########################################################################################
 #ADDS samp_4333 metadata (date)
 
-GLAMR_sample_table_Dec9_23 <- read_xlsx("data/Great_Lakes_Omics_Datasets_Dec9_23_notebook3bONLY.xlsx", sheet = "samples") #Import GLAMR metadata
+GLAMR_sample_table_Dec9_23 <- read_xlsx("GLAMR_metadata/Great_Lakes_Omics_Datasets_Dec9_23_notebook3bONLY.xlsx", sheet = "samples") #Import GLAMR metadata
 
-GLAMR_sample_table_sample_id_Dec9_23 <- GLAMR_sample_table_Dec9_23 %>% rename("SampleID" = "sample_id")
+GLAMR_sample_table_sample_id_Dec9_23 <- GLAMR_sample_table_Dec9_23 %>% rename("sample_id" = "SampleID")
 GLAMR_sample_table_sxt_samps_left <- left_join(GLAMR_bam_stats_60_cov_comb_ref, GLAMR_sample_table_sample_id_Dec9_23, by = "sample_id") %>%
                                         mutate(collection_date = collection_date %>% str_remove("T.*")) %>%
                                         select(sample_id, percent_cover_comb_ref, percent_id_comb_ref, lat, lon, collection_date, NOAA_Site) %>%
@@ -268,7 +267,7 @@ PERCENT_COV_ID_COMB <- left_join(GLAMR_bam_stats_60_cov_mm2_PERCENT_COVER, GLAMR
 
 GLAMR_sample_table_sxt_samps_left_PERCENT_COVER_ID <-  left_join(GLAMR_sample_table_sxt_samps_left, PERCENT_COV_ID_COMB, by = "sample_id") 
 
-#write_csv(file = "data/sxt_perCOV_perID_mm2.csv", x = GLAMR_sample_table_sxt_samps_left_PERCENT_COVER_ID)
+#write_csv(file = "GLAMR_metadata/sxt_perCOV_perID_mm2.csv", x = GLAMR_sample_table_sxt_samps_left_PERCENT_COVER_ID)
 
 ```
 

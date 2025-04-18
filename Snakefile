@@ -850,3 +850,43 @@ rule blastn_coassembly_13_vs_sxt_notebook9b:
 rule run_blastn_coassembly_13_vs_sxt_notebook9b:
     input: 
         expand("blast/output/sxt/blastn/coassembly_13_vs_sxt_notebook9b/{sample_binner_number}__{blast_name}_coassembly_bin_blastn.tsv", sample_binner_number = glob_wildcards("blast/query/coassembly_13_vs_sxt_notebook9b/{raw_bin}.fa",followlinks=True).raw_bin, blast_name = "blastn_db_sxt_AGHI_FINAL")
+
+rule drep_ada2: 
+    input: 
+        bins = expand("ada_bins2/raw_bins/{bin}.fa", bin = glob_wildcards("ada_bins2/raw_bins/{bin}.fa").bin)
+    output:
+        main_dir = directory("ada_bins2/drep_{ani}")
+    conda: "checkm_2025.1"
+    resources: cpus=16, mem_mb=250000, time_min=2880,
+    shell:
+        """
+  	    dRep dereplicate --S_ani 0.{wildcards.ani} {output.main_dir} -g {input.bins}
+        """
+
+rule run_ada_drep2:
+    input:
+         expand("ada_bins2/drep_{ani}", ani = ["99"])
+
+
+rule blastn_zen_bins_vs_neuro:
+    input: 
+        blast_db = "/geomicro/data2/pdenuyl2/neurotoxin_thesis/defunct/analysis_clean/blastn_db/{blast_name}.fasta",
+        blast_db_index = "/geomicro/data2/pdenuyl2/neurotoxin_thesis/defunct/analysis_clean/blastn_db/{blast_name}.fasta.nin",
+        zen_bin = "/geomicro/data2/pdenuyl2/NCBI/Genome_only/zenodo_mags/{sample_binner_number}.fa"
+    output:
+         "blast/output/neuro/blastn/zen_bins/{sample_binner_number}__{blast_name}_zen_bin_blastn.tsv"
+    log:
+        "blast/logs/output/neuro/blastn/zen_bins/{sample_binner_number}__{blast_name}_zen_bin_blastn.log"
+    conda: 
+        "config/blast.yml"
+    resources:
+        cpus=4, mem_mb=16000, time_min=10000
+    shell:
+        """
+        checkm data setRoot /geomicro/data2/pdenuyl2/databases/checkM
+        blastn -db {input.blast_db} -query {input.zen_bin} -out {output} -outfmt '6 std qcovs stitle' -num_threads {resources.cpus} -evalue 1e-2
+        """
+
+rule run_blastn_zen_bins_vs_neuro:
+    input: 
+        expand("blast/output/neuro/blastn/zen_bins/{sample_binner_number}__{blast_name}_zen_bin_blastn.tsv", sample_binner_number = glob_wildcards("/geomicro/data2/pdenuyl2/NCBI/Genome_only/zenodo_mags/{raw_bin}.fa",followlinks=True).raw_bin, blast_name = "blast_db_neuro_FINAL")

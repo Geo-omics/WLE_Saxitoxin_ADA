@@ -23,7 +23,7 @@ library(ggpmisc)
 knitr::opts_knit$set(root.dir = here::here("")) 
 
 #Load postgres server running on Alpena
-pg <- DBI::dbConnect(RPostgres::Postgres(),dbname = "XXX", host = "XXX", port = "XXX", user = "XXX", password = "XXX")
+pg <- DBI::dbConnect(RPostgres::Postgres(),dbname = "glamr_data", host = "localhost", port = "5432", user = "glamr_admin", password = "glamr2023")
 
 #Load GLAMR GTDBTK data
 gtdb <- tbl(pg, "GTDB") %>% 
@@ -39,6 +39,11 @@ checkM <- tbl(pg, "checkm") %>%
 
 ```
 
+---Outline---
+1.) Setup of general GLAMR data and transcriptomics samples of interest for BLASTN, filter data set, symlink processed contigs
+2.) 
+3.) Analysis of BLASTN results ~ GLAMR metagenomic assemblies (contigs)
+
 -------------
 
 1.) General + assembly setup
@@ -53,7 +58,7 @@ checkM <- tbl(pg, "checkm") %>%
 ##as_id("https://docs.google.com/spreadsheets/d/1z2IajV0Ay1lRjH9d0ibNBuf8PY0IbtEz/edit#gid=349037648") %>% 
   ##drive_download("GLAMR_metadata/Great_Lakes_Omics_Datasets_May10_24.xlsx", overwrite = TRUE)
 
-GLAMR_table_import <- read_xlsx("data/Great_Lakes_Omics_Datasets_May10_24.xlsx", sheet = "samples") #Import GLAMR metadata
+GLAMR_table_import <- read_xlsx("GLAMR_metadata/Great_Lakes_Omics_Datasets_May10_24.xlsx", sheet = "samples") #Import GLAMR metadata
 
 GLAMR_sample_table <- GLAMR_table_import %>%
   filter(

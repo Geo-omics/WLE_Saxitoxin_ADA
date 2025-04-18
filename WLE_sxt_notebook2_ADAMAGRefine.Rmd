@@ -23,7 +23,7 @@ library(ggpmisc)
 knitr::opts_knit$set(root.dir = here::here("")) 
 
 #Load postgres server running on Alpena
-pg <- DBI::dbConnect(RPostgres::Postgres(),dbname = "XXX", host = "XXX", port = "XXX", user = "XXX", password = "XXX")
+pg <- DBI::dbConnect(RPostgres::Postgres(),dbname = "glamr_data", host = "localhost", port = "5432", user = "glamr_admin", password = "glamr2023")
 
 #Load GLAMR GTDBTK data
 gtdb <- tbl(pg, "GTDB") %>% 
@@ -39,17 +39,24 @@ checkM <- tbl(pg, "checkm") %>%
 
 ```
 
+---Outline---
+1.) GToTree preparation (drep 95, 97, 98, 99)
+2.) GTDBTK (re)run preparation
+3.) GToTree building
+
+-------------
+
 1.) Prep for (re)run of GTDBTK on MAGs/Genomes for tree building - future labels
 ```{r}
 
 ###conda config --set channel_priority strict
-snakemake run_gtdbtk_GToTree --profile config/snakemake_profiles/alpena --rerun-incomplete 
+###snakemake run_gtdbtk_GToTree --profile config/snakemake_profiles/alpena --rerun-incomplete --dry-run
 
 gtdbtk_summary <- read_tsv("/geomicro/data2/pdenuyl2/neurotoxin_thesis/FINAL2/ada_bins/gtdbtk/output/gtdbtk.bac120.summary.tsv") #also called in step 2
 
 ```
 
-2.) GToTree preparation initial (drep 95, 97, 98, 99)
+2a.) GToTree preparation initial (drep 95, 97, 98, 99)
 ```{r}
 
 #Gather all ADA MAG paths to prepare for GToTree building, sym link to new path
@@ -113,7 +120,7 @@ GToTree -f fasta_files.txt -H Cyanobacteria -t -m genome_to_id_map.tsv -j 40 -o 
 #             Running on servers: https://merenlab.org/2015/11/28/visualizing-from-a-server/
 #             Anvi'o snakemake workflows: https://merenlab.org/2018/07/09/anvio-snakemake-workflows/
   
-4.) Setup terminal and screen session to run and visualize Anvi'o
+1.) Setup terminal and screen session to run and visualize Anvi'o
 ```{bash}
 #The following direction are directly performed in terminal or VS Code
 ssh -L 8720:localhost:8720 pdenuyl@earth-gateway.earth.lsa.umich.edu
@@ -127,7 +134,7 @@ screen -S anvio
 cd /geomicro/data2/pdenuyl2/neurotoxin_thesis/FINAL2/anvio
 ```
 
-5.) Run snakemake file to setup and generate Anvi'o sample profiles
+2.) Run snakemake file to setup and generate Anvi'o sample profiles
 ```{bash}
 
 #Run create anvio profiles for MAGs of interest (ADA non-sp000312705 drep98) (ADA sp000312705 drep99)
@@ -215,7 +222,7 @@ snakemake \
    
 ```
 
-6.) Merge Anvi'o profiles, import collections, interact, visualize, and refine bins
+3.) Merge Anvi'o profiles, import collections, interact, visualize, and refine bins
 samp_471
 ```{bash}
 
@@ -292,7 +299,7 @@ anvi-refine -p samples/samp_471/anvio_db/profiles/SAMPLES-MERGED_all/PROFILE.db 
 
 ```
 
-7.) Merge Anvi'o profiles, import collections, interact, visualize, and refine bins
+4.) Merge Anvi'o profiles, import collections, interact, visualize, and refine bins
 samp_481
 ```{bash}
 
@@ -406,7 +413,7 @@ s
 
 ```
 
-8.) Merge Anvi'o profiles, import collections, interact, visualize, and refine bins
+5.) Merge Anvi'o profiles, import collections, interact, visualize, and refine bins
 samp_2047
 ```{bash}
 
@@ -519,7 +526,7 @@ anvi-refine -p samples/samp_2047/anvio_db/profiles/SAMPLES-MERGED_all/PROFILE.db
 
 ```
 
-9.) Merge Anvi'o profiles, import collections, interact, visualize, and refine bins
+6.) Merge Anvi'o profiles, import collections, interact, visualize, and refine bins
 samp_2073
 ```{bash}
 
@@ -567,7 +574,7 @@ anvi-refine -p samples/samp_2073/anvio_db/profiles/samp_2073_profile/PROFILE.db 
 
 ```
 
-10.) Merge Anvi'o profiles, import collections, interact, visualize, and refine bins
+7.) Merge Anvi'o profiles, import collections, interact, visualize, and refine bins
 samp_4417
 ```{bash}
 
@@ -670,7 +677,7 @@ anvi-refine -p samples/samp_4417/anvio_db/profiles/SAMPLES-MERGED_all/PROFILE.db
 
 ```
 
-11.) Merge Anvi'o profiles, import collections, interact, visualize, and refine bins
+8.) Merge Anvi'o profiles, import collections, interact, visualize, and refine bins
 samp_477
 ```{bash}
 
@@ -757,7 +764,7 @@ anvi-refine -p samples/samp_477/anvio_db/profiles/SAMPLES-MERGED_all/PROFILE.db 
 
 ```
 
-12.) Merge Anvi'o profiles, import collections, interact, visualize, and refine bins
+8.) Merge Anvi'o profiles, import collections, interact, visualize, and refine bins
 samp_4344
 ```{bash}
 
@@ -844,7 +851,7 @@ anvi-refine -p samples/samp_4344/anvio_db/profiles/SAMPLES-MERGED_all/PROFILE.db
 
 ```
 
-13.) Merge Anvi'o profiles, import collections, interact, visualize, and refine bins
+9.) Merge Anvi'o profiles, import collections, interact, visualize, and refine bins
 samp_3937
 ```{bash}
 
@@ -929,7 +936,7 @@ anvi-refine -p samples/samp_3937/anvio_db/profiles/SAMPLES-MERGED_all/PROFILE.db
 
 ```
 
-14.) Merge Anvi'o profiles, import collections, interact, visualize, and refine bins
+10.) Merge Anvi'o profiles, import collections, interact, visualize, and refine bins
 samp_468
 ```{bash}
 
@@ -1000,7 +1007,7 @@ anvi-summarize -p samples/samp_468/anvio_db/profiles/SAMPLES-MERGED_all/PROFILE.
 
 ```
 
-15.) Merge Anvi'o profiles, import collections, interact, visualize, and refine bins
+11.) Merge Anvi'o profiles, import collections, interact, visualize, and refine bins
 samp_4304
 ```{bash}
 
@@ -1080,7 +1087,7 @@ anvi-refine -p samples/samp_4304/anvio_db/profiles/SAMPLES-MERGED_all/PROFILE.db
 
 ```
 
-16.) Merge Anvi'o profiles, import collections, interact, visualize, and refine bins
+12.) Merge Anvi'o profiles, import collections, interact, visualize, and refine bins
 samp_4326
 ```{bash}
 
@@ -1157,7 +1164,7 @@ anvi-refine -p samples/samp_4326/anvio_db/profiles/SAMPLES-MERGED_all/PROFILE.db
 
 ```
 
-17.) Merge Anvi'o profiles, import collections, interact, visualize, and refine bins
+13.) Merge Anvi'o profiles, import collections, interact, visualize, and refine bins
 samp_4380
 ```{bash}
 
@@ -1237,7 +1244,7 @@ anvi-refine -p samples/samp_4380/anvio_db/profiles/SAMPLES-MERGED_all/PROFILE.db
 
 ```
 
-18.) Merge Anvi'o profiles, import collections, interact, visualize, and refine bins
+14.) Merge Anvi'o profiles, import collections, interact, visualize, and refine bins
 samp_507
 ```{bash}
 
@@ -1314,7 +1321,7 @@ anvi-refine -p samples/samp_507/anvio_db/profiles/SAMPLES-MERGED_all/PROFILE.db 
 
 ```
 
-19.) Merge Anvi'o profiles, import collections, interact, visualize, and refine bins
+15.) Merge Anvi'o profiles, import collections, interact, visualize, and refine bins
 samp_4305
 ```{bash}
 
@@ -1421,7 +1428,7 @@ anvi-refine -p samples/samp_4305/anvio_db/profiles/SAMPLES-MERGED_all/PROFILE.db
 
 ```
 
-20.) Merge Anvi'o profiles, import collections, interact, visualize, and refine bins
+16.) Merge Anvi'o profiles, import collections, interact, visualize, and refine bins
 samp_2059
 ```{bash}
 
@@ -1461,7 +1468,7 @@ anvi-refine \
 
 ```
 
-21.) Examine refined bins with checkm
+17.) Examine refined bins with checkm
 ```{bash}
 
 ###conda config --set channel_priority strict
@@ -1469,7 +1476,7 @@ anvi-refine \
 
 ```
 
-22.) Compare new checkM results to old
+18.) Compare new checkM results to old
 ```{r}
 
 refined_mag_names <- c("samp_2047_concoct_1911", "samp_2073_semibin_92", "samp_3937_concoct_558", "samp_4344_concoct_197", "samp_4380_VAMB_181", "samp_468_metabat2_39", "samp_471_concoct_280", "samp_477_concoct_589", "samp_481_concoct_764", "samp_507_semibin_387", "samp_4305_concoct_92", "samp_2059_VAMB_27")
@@ -1491,7 +1498,7 @@ checkM_full <- full_join(checkM_resuts_original, checkM_results_new, by = "Bin I
 
 ```
 
-23.) drep_99 and run GTDBTK on MAGs one last time for confirmation (performed on the final final MAGS!)
+19.) drep_99 and run GTDBTK on MAGs one last time for confirmation (performed on the final final MAGS!)
 ```{bash}
 
 ###conda config --set channel_priority strict
@@ -1504,7 +1511,7 @@ stats.sh {bin}
 
 ```
 
-24.) Prep for (re-re)run of GTDBTK on MAGs/Genomes for tree building - future labels
+20.) Prep for (re-re)run of GTDBTK on MAGs/Genomes for tree building - future labels
 ```{r}
 
 ###conda config --set channel_priority strict
@@ -1514,7 +1521,7 @@ gtdbtk_summary <- read_tsv("/geomicro/data2/pdenuyl2/neurotoxin_thesis/FINAL2/FI
 
 ```
 
-25.) GToTree preparation ADA_redo (drep 98, 99)
+21.) GToTree preparation ADA_redo (drep 98, 99)
 ```{r}
 ###This is a mess, but kinda has helped get the job done
 ###DOESN:T QUITE WORK HOW I WANT IT TO, BUT YOU GET GTDBTK annotations for new bins.  Just overights old genome_to_id_map and all base refs.  
@@ -1559,7 +1566,7 @@ file.symlink(ada_mag_paths_redo$mag_path, ada_mag_paths_redo$new_mag_path)
 
 ```
 
-26.) Make GToTree(s) with FINAL MAGs
+22.) Make GToTree(s) with FINAL MAGs
 ```{bash}
 
 #For each GToTree directory, independently, run:
@@ -1570,6 +1577,337 @@ export TAXONKIT_DB=ncbi-taxdump
 conda deactivate
 
 GToTree -f fasta_files.txt -H Cyanobacteria -t -m genome_to_id_map.tsv -j 40 -o Tree_output_drep_98
+
+```
+
+Anvio samp_2153 sample add on - potenital D. circ saxitoxin producer
+```{bash}
+
+snakemake \
+   samples/samp_2153/anvio_db/profiles/.samp_2153_done_primary \
+     --profile config/snakemake_profiles/cayman/
+
+```
+
+Drep 98 and 99 with samp_2153 added
+```{bash}
+
+snakemake run_drep_ada_redo_2153 --profile config/snakemake_profiles/cayman/
+
+```
+
+Create complimentary Anvio profiles for samp_2153
+```{bash}
+
+snakemake \
+   samples/samp_2153/anvio_db/profiles/.samp_2030_done \
+   samples/samp_2153/anvio_db/profiles/.samp_2031_done \
+   samples/samp_2153/anvio_db/profiles/.samp_2077_done \
+   samples/samp_2153/anvio_db/profiles/.samp_2078_done \
+   samples/samp_2153/anvio_db/profiles/.samp_2159_done \
+   samples/samp_2153/anvio_db/profiles/.samp_4342_done \
+   samples/samp_2153/anvio_db/profiles/.samp_4353_done \
+   samples/samp_2153/anvio_db/profiles/.samp_485_done \
+   samples/samp_2153/anvio_db/profiles/.samp_505_done \
+   --profile config/snakemake_profiles/cayman/
+   
+#For checking sxt2
+snakemake \
+   samples/samp_2153/anvio_db/profiles/.samp_481_done \
+   samples/samp_2153/anvio_db/profiles/.samp_2158_done \
+   samples/samp_2153/anvio_db/profiles/.samp_2151_done \
+   samples/samp_2153/anvio_db/profiles/.samp_4338_done \
+   samples/samp_2153/anvio_db/profiles/.samp_4341_done \
+   samples/samp_2153/anvio_db/profiles/.samp_484_done \
+   samples/samp_2153/anvio_db/profiles/.samp_497_done \
+   --profile config/snakemake_profiles/vondamm/
+
+snakemake samples/samp_2153/anvio_db/profiles/.samp_481_done samples/samp_2153/anvio_db/profiles/.samp_2158_done samples/samp_2153/anvio_db/profiles/.samp_2151_done samples/samp_2153/anvio_db/profiles/.samp_4338_done samples/samp_2153/anvio_db/profiles/.samp_4341_done samples/samp_2153/anvio_db/profiles/.samp_484_done samples/samp_2153/anvio_db/profiles/.samp_497_done --profile config/snakemake_profiles/vondamm/
+
+```
+
+13.) Merge Anvi'o profiles, import collections, interact, visualize, and refine bins
+samp_2153
+```{bash}
+
+module load anvio/7
+
+anvi-merge \
+  samples/samp_2153/anvio_db/profiles/*_profile/PROFILE.db \
+  -o samples/samp_2153/anvio_db/profiles/SAMPLES-MERGED_all \
+  -c samples/samp_2153/anvio_db/contigs.db \
+  --sample-name samp_2153_pls_compliments
+
+############
+#Import bins
+############
+mkdir samples/samp_2153/anvio_db/collections
+
+cp /geomicro/data2/kiledal/GLAMR/data/omics/metagenomes/samp_2153/bins/das_tool/*.tsv \
+    samples/samp_2153/anvio_db/collections/
+  #imports contig assignments from the following binners: concoct, maxbin, metabat2, metadecoder, semibin, VAMB
+  
+##Manually
+##Edit VAMB contig mapping keep just bin of interest (get around duplocate contig names between bins) - VAMB_181
+
+anvi-import-collection \
+samples/samp_2153/anvio_db/collections/VAMB_contigs.txt \
+-p samples/samp_2153/anvio_db/profiles/SAMPLES-MERGED_all/PROFILE.db \
+-c samples/samp_2153/anvio_db/contigs.db \
+-C VAMB \
+--contigs-mode
+
+#Example: NOTE - Needed to run in single line or files couldn't be found by Anvi'o
+anvi-import-collection samples/samp_2153/anvio_db/collections/VAMB_contigs.txt -p samples/samp_2153/anvio_db/profiles/SAMPLES-MERGED_all/PROFILE.db -c samples/samp_2153/anvio_db/contigs.db -C VAMB --contigs-mode
+
+anvi-import-collection samples/samp_2153/anvio_db/collections/concoct_contigs.txt -p samples/samp_2153/anvio_db/profiles/SAMPLES-MERGED_all/PROFILE.db -c samples/samp_2153/anvio_db/contigs.db -C concoct --contigs-mode
+
+
+#####################################
+#xInteractx, xvisualizex, and refine bins
+#####################################
+
+anvi-refine \
+-p samples/samp_2153/anvio_db/profiles/SAMPLES-MERGED_all/PROFILE.db \
+-c samples/samp_2153/anvio_db/contigs.db \
+-C VAMB\
+-b samp_2153_VAMB_872 \
+--server-only -P 8720 
+
+anvi-refine -p samples/samp_2153/anvio_db/profiles/SAMPLES-MERGED_all/PROFILE.db -c samples/samp_2153/anvio_db/contigs.db -C VAMB -b samp_2153_VAMB_872 --server-only -P 8720 
+
+anvi-refine -p samples/samp_2153/anvio_db/profiles/SAMPLES-MERGED_all/PROFILE.db -c samples/samp_2153/anvio_db/contigs.db -C concoct -b samp_2153_concoct_511 --server-only -P 8720 
+#############################################
+Summarize bins / export new refine bin fasta+
+#############################################
+anvi-summarize \
+-p samples/samp_2153/anvio_db/profiles/SAMPLES-MERGED_all/PROFILE.db \
+-c samples/samp_2153/anvio_db/contigs.db \
+-C VAMB \
+-o samples/samp_2153/anvio_db/profiles/SAMPLES-MERGED_all/SUMMARY_FOLDER
+
+#Example: NOTE - Needed to run in single line or files couldn't be found by Anvi'o
+anvi-summarize -p samples/samp_2153/anvio_db/profiles/SAMPLES-MERGED_all/PROFILE.db -c samples/samp_2153/anvio_db/contigs.db -C VAMB -o samples/samp_2153/anvio_db/profiles/SAMPLES-MERGED_all/SUMMARY_FOLDER
+
+#New fasta for refined bin located:
+#samples/samp_2153/anvio_db/profiles/SAMPLES-MERGED_all/SUMMARY_FOLDER/bin_by_bin/samp_2153_VAMB_872_refine_FINAL2/samp_2153_VAMB_872_refine_FINAL2-contigs.fa
+
+#Check final refined profile
+anvi-refine -p samples/samp_2153/anvio_db/profiles/SAMPLES-MERGED_all/PROFILE.db -c samples/samp_2153/anvio_db/contigs.db -C VAMB -b samp_2153_VAMB_872_refine_FINAL2 --server-only -P 8720 
+
+```
+
+Check to see if refinement removes sxt genes from alphaproteobacteria MAG
+```{bash}
+
+anvi-refine -p samples/samp_2047/anvio_db/profiles/samp_2047_profile/PROFILE.db -c samples/samp_2047/anvio_db/contigs.db -C concoct -b samp_2047_concoct_1969 --server-only -P 8720 
+
+anvi-summarize -p samples/samp_2047/anvio_db/profiles/samp_2047_profile/PROFILE.db -c samples/samp_2047/anvio_db/contigs.db -C concoct -o samples/samp_2047/anvio_db/profiles/SUMMARY_FOLDER_alphaBin
+
+```
+
+Another potentential saxitoxin producer in samp_2153 - low quality cuspidothrix
+Make Anvio profile with the only three samples that have sxt gene present in cuspidothrix bin/mag
+samp_2153
+samp_2158
+samp_481
+```{bash}
+
+snakemake \
+      samples/samp_2153/anvio_db/profiles/.samp_2158_done \
+      samples/samp_2153/anvio_db/profiles/.samp_481_done \
+         --profile config/snakemake_profiles/cayman/ \
+         --rerun-incomplete 
+         
+snakemake samples/samp_2153/anvio_db/profiles/.samp_2158_done samples/samp_2153_cusp/anvio_db/profiles/.samp_481_done --profile config/snakemake_profiles/cayman/ --rerun-incomplete
+
+anvi-merge \
+  samples/samp_2153/anvio_db/profiles/samp_2153_profile_cusp/*_profile/PROFILE.db \
+  -o samples/samp_2153/anvio_db/profiles/SAMPLES-MERGED_cusp \
+  -c samples/samp_2153/anvio_db/contigs.db \
+  --sample-name samp_2153_cusp_compliments
+
+#Anvio merge just three samples that have sxt gene present in cuspidothrix bin/mag
+anvi-merge samples/samp_2153/anvio_db/profiles/samp_2153_profile_cusp/*_profile/PROFILE.db -o samples/samp_2153/anvio_db/profiles/SAMPLES-MERGED_cusp2 -c samples/samp_2153/anvio_db/contigs.db --sample-name samp_2153_cusp_compliments
+
+#SECOND TIME! Anvio merge samples that mapped to sxtX
+anvi-merge samples/samp_2153/anvio_db/profiles/samp_2153_profile_cusp2_April24/*_profile/PROFILE.db -o samples/samp_2153/anvio_db/profiles/SAMPLES-MERGED_cusp2_v3 -c samples/samp_2153/anvio_db/contigs.db --sample-name samp_2153_cusp_v3_compliments
+
+#---------------------------------
+
+############
+#Import bins
+############
+anvi-import-collection \
+samples/samp_2153/anvio_db/collections/concoct_contigs.txt \
+-p samples/samp_2153/anvio_db/profiles/SAMPLES-MERGED_cusp2/PROFILE.db \
+-c samples/samp_2153/anvio_db/contigs.db \
+-C concoct \
+--contigs-mode
+
+#Example: NOTE - Needed to run in single line or files couldn't be found by Anvi'o 
+anvi-import-collection samples/samp_2153/anvio_db/collections/concoct_contigs.txt -p samples/samp_2153/anvio_db/profiles/SAMPLES-MERGED_cusp2/PROFILE.db -c samples/samp_2153/anvio_db/contigs.db -C concoct --contigs-mode
+
+#SECOND TIME! Example: NOTE - Needed to run in single line or files couldn't be found by Anvi'o
+#1
+anvi-import-collection samples/samp_2153/anvio_db/collections/concoct_contigs.txt -p samples/samp_2153/anvio_db/profiles/SAMPLES-MERGED_cusp2_v3/PROFILE.db -c samples/samp_2153/anvio_db/contigs.db -C concoct --contigs-mode
+#2
+anvi-import-collection samples/samp_2153/anvio_db/collections/VAMB_contigs.txt -p samples/samp_2153/anvio_db/profiles/SAMPLES-MERGED_cusp2_v3/PROFILE.db -c samples/samp_2153/anvio_db/contigs.db -C VAMB --contigs-mode
+
+#####################################
+#Interact, visualize, and refine bins
+#####################################
+anvi-interactive \
+-p samples/samp_2153/anvio_db/profiles/SAMPLES-MERGED_cusp2/PROFILE.db \
+-c samples/samp_2153/anvio_db/contigs.db \
+-C concoct \
+--server-only \
+-P 8720
+
+#Example: NOTE - Needed to run in single line or files couldn't be found by Anvi'o
+#anvi-interactive -p samples/samp_2153/anvio_db/profiles/SAMPLES-MERGED_cusp2/PROFILE.db -c samples/samp_2153/anvio_db/contigs.db -C concoct --server-only -P 8720
+
+anvi-refine \
+-p samples/samp_2153/anvio_db/profiles/SAMPLES-MERGED_cusp2/PROFILE.db \
+-c samples/samp_2153/anvio_db/contigs.db \
+-C concoct \
+-b samp_2153_concoct_511 \
+--server-only -P 8720 
+
+#Example: NOTE - Needed to run in single line or files couldn't be found by Anvi'o
+anvi-refine -p samples/samp_2153/anvio_db/profiles/SAMPLES-MERGED_cusp2/PROFILE.db -c samples/samp_2153/anvio_db/contigs.db -C concoct -b samp_2153_concoct_511 --server-only -P 8720 
+
+#SECOND TIME! Example: NOTE - Needed to run in single line or files couldn't be found by Anvi'o
+#1
+anvi-refine -p samples/samp_2153/anvio_db/profiles/SAMPLES-MERGED_cusp2_v3/PROFILE.db -c samples/samp_2153/anvio_db/contigs.db -C concoct -b samp_2153_concoct_511 --server-only -P 8720 
+
+#2
+anvi-refine -p samples/samp_2153/anvio_db/profiles/SAMPLES-MERGED_cusp2_v3/PROFILE.db -c samples/samp_2153/anvio_db/contigs.db -C concoct -b samp_2153_concoct_510 --server-only -P 8720 
+
+#3
+anvi-refine -p samples/samp_2153/anvio_db/profiles/SAMPLES-MERGED_cusp2_v3/PROFILE.db -c samples/samp_2153/anvio_db/contigs.db -C VAMB -b samp_2153_VAMB_872 --server-only -P 8720 
+
+#############################################
+Summarize bins / export new refine bin fasta+
+#############################################
+anvi-summarize \
+-p samples/samp_2153/anvio_db/profiles/SAMPLES-MERGED_cusp2/PROFILE.db \
+-c samples/samp_2153/anvio_db/contigs.db \
+-C concoct \
+-o samples/samp_2153/anvio_db/profiles/SAMPLES-MERGED_cusp2/SUMMARY_FOLDER
+
+#Example: NOTE - Needed to run in single line or files couldn't be found by Anvi'o
+anvi-summarize -p samples/samp_2153/anvio_db/profiles/SAMPLES-MERGED_cusp2/PROFILE.db -c samples/samp_2153/anvio_db/contigs.db -C concoct -o samples/samp_2153/anvio_db/profiles/SAMPLES-MERGED_cusp2/SUMMARY_FOLDER
+
+#New fasta for refined bin located:
+#samples/samp_2153/anvio_db/profiles/SAMPLES-MERGED_cusp/SUMMARY_FOLDER/bin_by_bin/samp_2153_concoct_511_refine2_1/samp_2153_concoct_511_refine2_1-contigs.fa
+
+```
+
+samp_2158
+```{bash}
+
+#Create anvio profile
+snakemake samples/samp_2158/anvio_db/profiles/.samp_2158_done_primary --profile config/snakemake_profiles/cayman/
+  
+#For checking sxt2
+snakemake samples/samp_2158/anvio_db/profiles/.samp_2153_done samples/samp_2158/anvio_db/profiles/.samp_481_done samples/samp_2158/anvio_db/profiles/.samp_2151_done samples/samp_2158/anvio_db/profiles/.samp_4338_done samples/samp_2158/anvio_db/profiles/.samp_4341_done samples/samp_2158/anvio_db/profiles/.samp_484_done samples/samp_2158/anvio_db/profiles/.samp_497_done --profile config/snakemake_profiles/vondamm/  
+
+#Anvio merge samples that mapped to sxtX
+anvi-merge samples/samp_2158/anvio_db/profiles/*_profile/PROFILE.db -o samples/samp_2158/anvio_db/profiles/SAMPLES-MERGED_sxt2 -c samples/samp_2158/anvio_db/contigs.db --sample-name samp_2158_sxt2_compliments
+
+############
+#Import bins
+############
+mkdir samples/samp_2158/anvio_db/collections
+
+cp /geomicro/data2/kiledal/GLAMR/data/omics/metagenomes/samp_2158/bins/das_tool/*.tsv samples/samp_2158/anvio_db/collections/
+  #imports contig assignments from the following binners: concoct, maxbin, metabat2, metadecoder, semibin, VAMB
+
+anvi-import-collection samples/samp_2158/anvio_db/collections/concoct_contigs.tsv -p samples/samp_2158/anvio_db/profiles/SAMPLES-MERGED_sxt2/PROFILE.db -c samples/samp_2158/anvio_db/contigs.db -C concoct --contigs-mode
+
+#1
+anvi-refine -p samples/samp_2158/anvio_db/profiles/SAMPLES-MERGED_sxt2/PROFILE.db -c samples/samp_2158/anvio_db/contigs.db -C concoct -b samp_2158_concoct_238 --server-only -P 8720 
+
+```
+
+samp_481
+```{bash}
+
+#For checking sxt2
+snakemake \
+   samples/samp_481/anvio_db/profiles/.samp_2153_done \
+   samples/samp_481/anvio_db/profiles/.samp_2158_done \
+   samples/samp_481/anvio_db/profiles/.samp_2151_done \
+   samples/samp_481/anvio_db/profiles/.samp_4338_done \
+   samples/samp_481/anvio_db/profiles/.samp_4341_done \
+   samples/samp_481/anvio_db/profiles/.samp_484_done \
+   samples/samp_481/anvio_db/profiles/.samp_497_done \
+   --profile config/snakemake_profiles/vondamm/
+
+snakemake samples/samp_481/anvio_db/profiles/.samp_2153_done samples/samp_481/anvio_db/profiles/.samp_2158_done samples/samp_481/anvio_db/profiles/.samp_2151_done samples/samp_481/anvio_db/profiles/.samp_4338_done samples/samp_481/anvio_db/profiles/.samp_4341_done samples/samp_481/anvio_db/profiles/.samp_484_done samples/samp_481/anvio_db/profiles/.samp_497_done --profile config/snakemake_profiles/vondamm/  
+
+#Anvio merge samples that mapped to sxtX
+anvi-merge samples/samp_481/anvio_db/profiles/samp_481_profile_sxt2/*_profile/PROFILE.db -o samples/samp_481/anvio_db/profiles/SAMPLES-MERGED_sxt2 -c samples/samp_481/anvio_db/contigs.db --sample-name samp_481_sxt2_compliments
+
+#Import collection
+anvi-import-collection samples/samp_481/anvio_db/collections/maxbin_contigs.txt -p samples/samp_481/anvio_db/profiles/SAMPLES-MERGED_sxt2/PROFILE.db -c samples/samp_481/anvio_db/contigs.db -C maxbin --contigs-mode
+
+#1
+anvi-refine -p samples/samp_481/anvio_db/profiles/SAMPLES-MERGED_sxt2/PROFILE.db -c samples/samp_481/anvio_db/contigs.db -C maxbin -b samp_481_maxbin_647 --server-only -P 8720 
+
+```
+
+GToTree 99 - redo -31Jan2025
+```{r}
+
+#First, get list of ADA Bins (zenodo bins) - SuppTable1 - EST Revision2 (31Jan2025)
+tableS1_31Jan25 <- read_xlsx("GLAMR_metadata/DenUyl_WLE_Saxitoxin_EST_Tables_SupportingInformation_submit_revision1.xlsx", sheet = "tableS1", col_names = FALSE)
+
+# Assign column names from the second row
+colnames(tableS1_31Jan25) <- tableS1_31Jan25[2, ] 
+
+# Remove the first two rows since they're now redundant
+tableS1_31Jan25_colnam <- tableS1_31Jan25[-1:-2, ]
+
+# Filter out all ADA-clade MAGs
+tableS1_31Jan25_ada <- tableS1_31Jan25_colnam %>% 
+  filter(grepl("f__Nostocaceae", classification)). #66 bins (64 Doli + 2 Cusp, in agreement with reviewer during revision 2)
+
+#Now, above is a list of MAGs to include in a drep99 GToTree.  Probably manually do this from here.  
+
+old_drep99add_MAGs <- c("samp_484_concoct_615", "samp_2114_maxbin_140", "samp_2135_VAMB_130",
+                        "samp_1328_concoct_243", "samp_448_concoct_519", "samp_4384_concoct_671", "samp_512_maxbin_418",
+                        "samp_471_semibin_214", "samp_2141_concoct_220", "samp_500_concoct_544", "samp_465_metabat2_15",
+                        "samp_463_VAMB_386", "samp_4356_metabat2_74", "samp_484_metabat2_49", "samp_2030_metabat2_60",
+                        "samp_481_maxbin_182", "samp_4340_metabat2_38", "samp_4367_concoct_819", "samp_2162_metabat2_31",
+                        "samp_2011_metadecoder_1476", "samp_2151_maxbin_312", "samp_4375_concoct_27", "samp_2059_VAMB_29",
+                        "samp_2047_concoct_1911",
+                        "samp_2059_VAMB_27", "samp_2073_semibin_92", "samp_3937_concoct_558", "samp_4305_concoct_92_refine_FINAL2-contigs",
+                        "samp_4344_concoct_197", "samp_4380_VAMB_181_refine_FINAL2-contigs", "samp_468_metabat2_39", "samp_471_concoct_280_refine_FINAL2-contigs",
+                        "samp_477_concoct_589", "samp_481_concoct_764_refine_FINAL2-contigs", "samp_507_semibin_387_refine_FINAL2-contigs")
+#IMPORTANT NOTE: samp_3937_concoct_558 not in tableS1.  For some reason, there must be another one.  Maybe build tree and find out, then swap them in the table??
+
+retained_drep99add_MAGs <- c("samp_2135_VAMB_130", "samp_448_concoct_519", "samp_512_maxbin_418", "samp_471_semibin_214", "samp_2141_concoct_220", 
+                        "samp_500_concoct_544", "samp_465_metabat2_15", "samp_2162_metabat2_31", "samp_2011_metadecoder_1476", "samp_2151_maxbin_312",  
+                        "samp_2059_VAMB_29", "samp_2047_concoct_1911",
+                        "samp_2059_VAMB_27", "samp_2073_semibin_92", "samp_3937_concoct_558", "samp_4305_concoct_92_refine_FINAL2-contigs",
+                        "samp_4344_concoct_197", "samp_4380_VAMB_181_refine_FINAL2-contigs", "samp_468_metabat2_39", "samp_471_concoct_280_refine_FINAL2-contigs",
+                        "samp_477_concoct_589", "samp_481_concoct_764_refine_FINAL2-contigs", "samp_507_semibin_387_refine_FINAL2-contigs")
+
+removed_drep99add_MAGs <- c("samp_484_concoct_615", "samp_2114_maxbin_140", "samp_1328_concoct_243", "samp_4384_concoct_671", "samp_463_VAMB_386", 
+                            "samp_4356_metabat2_74", "samp_484_metabat2_49", "samp_2030_metabat2_60", "samp_481_maxbin_182", "samp_4340_metabat2_38", 
+                            "samp_4367_concoct_819", "samp_4375_concoct_27") 
+
+#Link new MAGs to GToTree/GToTree_drep99_Jan25_rev2 folder
+  tableS1_31Jan25_ada_toadd <- tableS1_31Jan25_ada %>%
+                                    filter(!(mag %in% retained_drep99add_MAGs)) %>%
+                                    mutate(mag_path = paste0("/geomicro/data2/kiledal/GLAMR/data/omics/metagenomes/", SampleID, "/bins/drep/dereplicated_genomes/", mag, ".fa"), 
+                                           new_path = paste0("/geomicro/data2/pdenuyl2/neurotoxin_thesis/FINAL2/GToTree/GToTree_drep99_Jan25_rev2/temp/", mag, ".fna"))
+  
+  
+#symbolic link ada_mag_paths
+##file.copy(tableS1_31Jan25_ada_toadd$mag_path, tableS1_31Jan25_ada_toadd$new_path) 
 
 ```
 

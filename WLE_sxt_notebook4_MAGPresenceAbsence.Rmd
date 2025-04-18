@@ -25,7 +25,7 @@ library(furrr)
 knitr::opts_knit$set(root.dir = here::here("")) 
 
 #Load postgres server running on Alpena
-pg <- DBI::dbConnect(RPostgres::Postgres(),dbname = "XXX", host = "XXX", port = "XXX", user = "XXX", password = "XXX")
+pg <- DBI::dbConnect(RPostgres::Postgres(),dbname = "glamr_data", host = "localhost", port = "5432", user = "glamr_admin", password = "glamr2023")
 
 #Load GLAMR GTDBTK data
 gtdb <- tbl(pg, "GTDB") %>% 
@@ -42,16 +42,16 @@ gtdb <- tbl(pg, "GTDB") %>%
 5.) Analyze rep mags across GLAMR - Coverage and %ID
 6.) Plot GLAMR bam rpkm data from ref mags - heat map 
 7.) Perform coverage check on specificity of mapping --- rep MAGs LE20-WE8 & LE16-WE8-Aug 
-8.) Analysis for manuscript statements
+8.) Analyze step 7 specificity test
 -------------
 
-1.) symlink samples for mapping MAG coverage check
+1.) symlink samples for mapping MAG coverage check 
 ```{r} 
 
 #Identify samples by set (i.e. project) of interest in GLAMR - Western Lake Erie only
 StudyID_to_use_WLE <- c("set_17", "set_18", "set_35", "set_36", "set_38", "set_40", "set_41", "set_42", "set_46", "set_51", "set_56")
 
-GLAMR_table_import <- read_xlsx("data/Great_Lakes_Omics_Datasets_Oct27_23.xlsx", sheet = "samples") #Import GLAMR metadata
+GLAMR_table_import <- read_xlsx("GLAMR_metadata/Great_Lakes_Omics_Datasets_Oct27_23.xlsx", sheet = "samples") #Import GLAMR metadata
 ##
 #IMPORTANT NOTE
 ##
@@ -77,8 +77,10 @@ read_paths_raw_WLE <- system("ls /geomicro/data2/kiledal/GLAMR/data/omics/metage
          new_path = str_glue("/geomicro/data2/pdenuyl2/neurotoxin_thesis/FINAL2/mapping/reads/GLAMR_WLERef_mm2/reads/{sample}__{dir}.fastq.gz")) %>% 
          filter(sample %in% GLAMR_sample_table$SampleID)
 
+n_distinct(read_paths_raw_WLE$sample) # 530 unique samples with raw reads to symbolic link - October 27, 2023
+
 #symbolic link read_paths
-file.symlink(read_paths_raw_WLE$read_path, read_paths_raw_WLE$new_path)
+##file.symlink(read_paths_raw_WLE$read_path, read_paths_raw_WLE$new_path)
 
 ```
 
@@ -87,8 +89,8 @@ file.symlink(read_paths_raw_WLE$read_path, read_paths_raw_WLE$new_path)
 
 #Database WLERefCat3.fa - concatenated bins: 
 
-conda config --set channel_priority strict
-snakemake run_read_mapping_GLAMRraw_WLERef_mm2 --profile config/snakemake_profiles/alpena/ 
+#conda config --set channel_priority strict
+#snakemake run_read_mapping_GLAMRraw_WLERef_mm2 --profile config/snakemake_profiles/alpena/ --dry-run 
 
 
 ```
@@ -126,9 +128,9 @@ ref_mag_bam_rpkm <- function(bam_path){
     
   # get total sequencing read counts for sample from GLAMR
       read_count_fastp <- read_tsv(paste0("/geomicro/data2/kiledal/GLAMR/data/omics/metagenomes/",sample_id,"/reads/",sample_id,"_read_count_fastp.tsv"))
-      read_count_decon_fwd <- read_count_fastp[4, 2]
-      read_count_decon_rev <- read_count_fastp[4, 3]
-      total_decon_sample_reads <- sum(read_count_decon_fwd, read_count_decon_rev)  # get total read count from GLAMR (all fwd and rev reads)
+      read_count_decon_fwd <- read_count_fastp[4, 2]   #Only fwd reads needed 
+      #read_count_decon_rev <- read_count_fastp[4, 3]
+      #total_decon_sample_reads <- sum(read_count_decon_fwd, read_count_decon_rev)  # get total read count from GLAMR (all fwd and rev reads) 
 
   # read in bam file
     bam <- Rsamtools::BamFile(file = bam_path,
@@ -146,10 +148,13 @@ ref_mag_bam_rpkm <- function(bam_path){
                           select(-Freq)                         # remove 'Freq' after distinct(), because not relevant for entire MAG
   
     rpkm <- left_join(mapped_reads_df, ref_mag_length, by = "mag") %>%
-                 mutate(total_decon_sample_reads,                # add total_decon_sample_reads determined earlier in function
+                 mutate(read_count_decon_fwd,                # add read_count_decon_fwd determined earlier in function
                         sample_id,                               # add sample_id determined earlier in function
-                        rpkm = (mapped_reads / (mag_length * total_decon_sample_reads)) * 1000000) %>%  # Calculate RPKM
-                  select(-Var1)                                  # remove 'Freq' after distinct(), because not relevant for entire MAG
+                        per_million = read_count_decon_fwd / 1000000,
+                        rpm = mapped_reads / per_million,
+                        rpkm = rpm / (mag_length/1000)) %>% #From Anders IMPORTANT UPDATE AUGUST 2024
+                    #OLD#rpkm = (mapped_reads / (mag_length * total_decon_sample_reads)) * 1000000) %>%  # Calculate RPKM
+                  select(-Var1)                                  
 } 
 
 # create list of bam paths to process
@@ -158,7 +163,7 @@ bam_paths_rpkm <- system("ls mapping/reads/GLAMR_WLERef_mm2/output/bam/*.bam", i
   #filter(!(bam_path %in% c("mapping/reads/GLAMR_WLERef_mm2/output/bam/samp_40_WLERefCat3_mapped.bam")))
 
 # Error in next step caused by: '/geomicro/data2/kiledal/GLAMR/data/omics/metagenomes/samp_4306/reads/samp_4306_read_count_fastp.tsv' does not exist. Also samp_4333.
-##Actually, samp_40 doesn't have any read counts, so I'll add them manually!
+##Actually, samp_40 doesn't have any read counts, so I'll add them manually - NOT SO SURE!
 
 #40 - 
 # function to generate mag rpkm for samp_40
@@ -168,9 +173,9 @@ bam_path <- "mapping/reads/GLAMR_WLERef_mm2/output/bam/samp_40_WLERefCat3_mapped
     
   # get total sequencing read counts for sample from GLAMR
     #command: printf "decon_reads\t$(($(zcat decon_fwd_reads_fastp.fastq.gz | wc -l) / 4 ))\t$(($(zcat decon_rev_reads_fastp.fastq.gz | wc -l) / 4 ))\n"
-      read_count_decon_fwd <- 69425017
-      read_count_decon_rev <- 69425017
-      total_decon_sample_reads <- sum(read_count_decon_fwd, read_count_decon_rev)  # get total read count from GLAMR (all fwd and rev reads)
+      fwd_read_count <- 69425017
+      #read_count_decon_rev <- 69425017
+      #total_decon_sample_reads <- sum(read_count_decon_fwd, read_count_decon_rev)  # get total read count from GLAMR (all fwd and rev reads)
 
   # read in bam file
     bam <- Rsamtools::BamFile(file = bam_path,
@@ -188,10 +193,13 @@ bam_path <- "mapping/reads/GLAMR_WLERef_mm2/output/bam/samp_40_WLERefCat3_mapped
                           dplyr::select(-Freq)                         # remove 'Freq' after distinct(), because not relevant for entire MAG
   
     rpkm <- left_join(mapped_reads_df, ref_mag_length, by = "mag") %>%
-                 mutate(total_decon_sample_reads,                # add total_decon_sample_reads determined earlier in function
+                 mutate(fwd_read_count,                # add read_count_decon_fwd determined earlier in function
                         sample_id,                               # add sample_id determined earlier in function
-                        rpkm = (mapped_reads / (mag_length * total_decon_sample_reads)) * 1000000) %>%  # Calculate RPKM
-                  dplyr::select(-Var1)                                  # remove 'Freq' after distinct(), because not relevant for entire MAG
+                        per_million = read_count_decon_fwd / 1000000,
+                        rpm = mapped_reads / per_million,
+                        rpkm = rpm / (mag_length/1000)) %>% #From Anders IMPORTANT UPDATE AUGUST 2024
+                    #OLD#rpkm = (mapped_reads / (mag_length * total_decon_sample_reads)) * 1000000) %>%  # Calculate RPKM
+                  select(-Var1)
 Samp_40_bam_rpkm_mm2 <- rpkm
 
 #39 - 
@@ -202,9 +210,9 @@ bam_path <- "mapping/reads/GLAMR_WLERef_mm2/output/bam/samp_39_WLERefCat3_mapped
     
   # get total sequencing read counts for sample from GLAMR
     #command: printf "decon_reads\t$(($(zcat decon_fwd_reads_fastp.fastq.gz | wc -l) / 4 ))\t$(($(zcat decon_rev_reads_fastp.fastq.gz | wc -l) / 4 ))\n"
-      read_count_decon_fwd <- 110543202
-      read_count_decon_rev <- 110543202
-      total_decon_sample_reads <- sum(read_count_decon_fwd, read_count_decon_rev)  # get total read count from GLAMR (all fwd and rev reads)
+      fwd_read_count <- 110543202
+      #read_count_decon_rev <- 110543202
+      #total_decon_sample_reads <- sum(read_count_decon_fwd, read_count_decon_rev)  # get total read count from GLAMR (all fwd and rev reads)
 
   # read in bam file
     bam <- Rsamtools::BamFile(file = bam_path,
@@ -222,10 +230,13 @@ bam_path <- "mapping/reads/GLAMR_WLERef_mm2/output/bam/samp_39_WLERefCat3_mapped
                           dplyr::select(-Freq)                         # remove 'Freq' after distinct(), because not relevant for entire MAG
   
     rpkm <- left_join(mapped_reads_df, ref_mag_length, by = "mag") %>%
-                 mutate(total_decon_sample_reads,                # add total_decon_sample_reads determined earlier in function
+                 mutate(fwd_read_count,                # add read_count_decon_fwd determined earlier in function
                         sample_id,                               # add sample_id determined earlier in function
-                        rpkm = (mapped_reads / (mag_length * total_decon_sample_reads)) * 1000000) %>%  # Calculate RPKM
-                  dplyr::select(-Var1)                                  # remove 'Freq' after distinct(), because not relevant for entire MAG
+                        per_million = read_count_decon_fwd / 1000000,
+                        rpm = mapped_reads / per_million,
+                        rpkm = rpm / (mag_length/1000)) %>% #From Anders IMPORTANT UPDATE AUGUST 2024
+                    #OLD#rpkm = (mapped_reads / (mag_length * total_decon_sample_reads)) * 1000000) %>%  # Calculate RPKM
+                  select(-Var1)
 Samp_39_bam_rpkm_mm2 <- rpkm
 
 #2141 - 
@@ -236,9 +247,9 @@ bam_path <- "mapping/reads/GLAMR_WLERef_mm2/output/bam/samp_2141_WLERefCat3_mapp
     
   # get total sequencing read counts for sample from GLAMR
     #command: printf "decon_reads\t$(($(zcat decon_fwd_reads_fastp.fastq.gz | wc -l) / 4 ))\t$(($(zcat decon_rev_reads_fastp.fastq.gz | wc -l) / 4 ))\n"
-      read_count_decon_fwd <- 76247941
-      read_count_decon_rev <- 76247941
-      total_decon_sample_reads <- sum(read_count_decon_fwd, read_count_decon_rev)  # get total read count from GLAMR (all fwd and rev reads)
+      fwd_read_count <- 76247941
+      #read_count_decon_rev <- 76247941
+      #total_decon_sample_reads <- sum(read_count_decon_fwd, read_count_decon_rev)  # get total read count from GLAMR (all fwd and rev reads)
 
   # read in bam file
     bam <- Rsamtools::BamFile(file = bam_path,
@@ -256,10 +267,13 @@ bam_path <- "mapping/reads/GLAMR_WLERef_mm2/output/bam/samp_2141_WLERefCat3_mapp
                           dplyr::select(-Freq)                         # remove 'Freq' after distinct(), because not relevant for entire MAG
   
     rpkm <- left_join(mapped_reads_df, ref_mag_length, by = "mag") %>%
-                 mutate(total_decon_sample_reads,                # add total_decon_sample_reads determined earlier in function
+                 mutate(fwd_read_count,                # add read_count_decon_fwd determined earlier in function
                         sample_id,                               # add sample_id determined earlier in function
-                        rpkm = (mapped_reads / (mag_length * total_decon_sample_reads)) * 1000000) %>%  # Calculate RPKM
-                  dplyr::select(-Var1)                                  # remove 'Freq' after distinct(), because not relevant for entire MAG
+                        per_million = read_count_decon_fwd / 1000000,
+                        rpm = mapped_reads / per_million,
+                        rpkm = rpm / (mag_length/1000)) %>% #From Anders IMPORTANT UPDATE AUGUST 2024
+                    #OLD#rpkm = (mapped_reads / (mag_length * total_decon_sample_reads)) * 1000000) %>%  # Calculate RPKM
+                  select(-Var1)
 Samp_2141_bam_rpkm_mm2 <- rpkm
 
 #2057 - 
@@ -270,9 +284,9 @@ bam_path <- "mapping/reads/GLAMR_WLERef_mm2/output/bam/samp_2057_WLERefCat3_mapp
     
   # get total sequencing read counts for sample from GLAMR
     #command: printf "decon_reads\t$(($(zcat decon_fwd_reads_fastp.fastq.gz | wc -l) / 4 ))\t$(($(zcat decon_rev_reads_fastp.fastq.gz | wc -l) / 4 ))\n"
-      read_count_decon_fwd <- 13409039
-      read_count_decon_rev <- 13409039
-      total_decon_sample_reads <- sum(read_count_decon_fwd, read_count_decon_rev)  # get total read count from GLAMR (all fwd and rev reads)
+      fwd_read_count <- 13409039
+      #read_count_decon_rev <- 13409039
+      #total_decon_sample_reads <- sum(read_count_decon_fwd, read_count_decon_rev)  # get total read count from GLAMR (all fwd and rev reads)
 
   # read in bam file
     bam <- Rsamtools::BamFile(file = bam_path,
@@ -290,26 +304,36 @@ bam_path <- "mapping/reads/GLAMR_WLERef_mm2/output/bam/samp_2057_WLERefCat3_mapp
                           dplyr::select(-Freq)                         # remove 'Freq' after distinct(), because not relevant for entire MAG
   
     rpkm <- left_join(mapped_reads_df, ref_mag_length, by = "mag") %>%
-                 mutate(total_decon_sample_reads,                # add total_decon_sample_reads determined earlier in function
+                 mutate(fwd_read_count,                # add read_count_decon_fwd determined earlier in function
                         sample_id,                               # add sample_id determined earlier in function
-                        rpkm = (mapped_reads / (mag_length * total_decon_sample_reads)) * 1000000) %>%  # Calculate RPKM
-                  dplyr::select(-Var1)                                  # remove 'Freq' after distinct(), because not relevant for entire MAG
+                        per_million = read_count_decon_fwd / 1000000,
+                        rpm = mapped_reads / per_million,
+                        rpkm = rpm / (mag_length/1000)) %>% #From Anders IMPORTANT UPDATE AUGUST 2024
+                    #OLD#rpkm = (mapped_reads / (mag_length * total_decon_sample_reads)) * 1000000) %>%  # Calculate RPKM
+                  select(-Var1)
 Samp_2057_bam_rpkm_mm2 <- rpkm
 
 #IMPORTANT: Because there were no read counts for samp_39, samp_40, and samp_2141, I'm going to manually calculate them and make new data.tables here.  Then add them to GLAMR_bam_rpkm_mm2.
 
 #plan(multisession, workers = 8)
-##GLAMR_bam_rpkm_mm2 <- future_map_dfr(bam_paths_rpkm$bam_path, ~ ref_mag_bam_rpkm(.x), .progress = TRUE) # last run: Dec 13, 2023
+#GLAMR_bam_rpkm_mm2 <- future_map_dfr(bam_paths_rpkm$bam_path, ~ ref_mag_bam_rpkm(.x), .progress = TRUE) # last run: August 13, 2024
 #plan(sequential) #stop multisession
+View(GLAMR_bam_rpkm_mm2)
 
-#write_csv(GLAMR_bam_rpkm_mm2_comb, file = "mapping/reads/GLAMR_WLERef_mm2/output/GLAMR_bam_rpkm_mm2_Dec14_23.csv") 
-GLAMR_bam_rpkm_mm2 <- read_csv(file = "mapping/reads/GLAMR_WLERef_mm2/output/GLAMR_bam_rpkm_mm2_Dec14_23.csv")
+#Format data type
+GLAMR_bam_rpkm_mm2_update <- GLAMR_bam_rpkm_mm2 %>%
+  mutate(per_million = as.numeric(unlist(per_million)),
+         rpm = as.numeric(unlist(rpm)),
+         rpkm = as.numeric(unlist(rpkm)))
 
-GLAMR_bam_rpkm_mm2_comb <- bind_rows(GLAMR_bam_rpkm_mm2, Samp_39_bam_rpkm_mm2, Samp_40_bam_rpkm_mm2, Samp_2141_bam_rpkm_mm2, Samp_2057_bam_rpkm_mm2) %>%
+GLAMR_bam_rpkm_mm2_comb <- bind_rows(GLAMR_bam_rpkm_mm2_update, Samp_39_bam_rpkm_mm2, Samp_40_bam_rpkm_mm2, Samp_2141_bam_rpkm_mm2, Samp_2057_bam_rpkm_mm2) %>%
                                 filter(!(sample_id %in% c("samp_39", "samp_40", "samp_2141", "samp_2057") & is.na(rpkm))) %>%
                                 distinct(sample_id, mag, .keep_all = TRUE)
 
 GLAMR_bam_rpkm_mm2 <- GLAMR_bam_rpkm_mm2_comb
+
+write_csv(GLAMR_bam_rpkm_mm2, file = "mapping/reads/GLAMR_WLERef_mm2/output/GLAMR_bam_rpkm_mm2_Aug13_24_IMPORTANTUPDATE.csv") 
+GLAMR_bam_rpkm_mm2 <- read_csv(file = "mapping/reads/GLAMR_WLERef_mm2/output/GLAMR_bam_rpkm_mm2_Aug13_24_IMPORTANTUPDATE.csv")
 
 ```
 
@@ -370,10 +394,10 @@ bam_paths_ref_cov <- system("ls mapping/reads/GLAMR_WLERef_mm2/output/bam/*.bam"
 #plan(multisession, workers = 24)
 #options(future.globals.maxSize = 10*1024^3)
 ##GLAMR_bam_MAGcover_mm2 <- future_map_dfr(bam_paths_ref_cov$bam_path, ~ ref_mag_bam_cov(.x), .progress = TRUE) # last run: Nov 30, 2023
-#plan(sequential) #stop multisession
+plan(sequential) #stop multisession
 
 #write_csv(GLAMR_bam_MAGcover_mm2, file = "mapping/reads/GLAMR_WLERef_mm2/output/GLAMR_bam_MAGcover_mm2_Dec1_23.csv")
-GLAMR_bam_MAGcover_mm2 <- read_csv(file = "mapping/reads/GLAMR_WLERef_mm2/output/GLAMR_bam_MAGcover_mm2_Dec1_23.csv")
+GLAMR_bam_MAGcover_mm2 <- read_csv(file = "mapping/reads/GLAMR_WLERef_mm2/output/GLAMR_bam_MAGcover_mm2_Dec1_23.csv") #Not and no need to update:August 2024
 
 ```
 
@@ -388,7 +412,7 @@ GLAMR_sample_table_bam_stats <- full_join(GLAMR_sample_table, GLAMR_bam_stats, b
 ##**********
 #COMBINE WITH DATA FROM ABOVE - 
 #Metadata addition (Dec. 1, 2023)
-GLAMR_Seagull_Site_import <- read_csv("data/Great_Lakes_Omics_Datasets_SeagullSiteAssignments_Nov25_23.csv") #Import Seagull Site Assignments
+GLAMR_Seagull_Site_import <- read_csv("GLAMR_metadata/Great_Lakes_Omics_Datasets_SeagullSiteAssignments_Nov25_23.csv") #Import Seagull Site Assignments
 GLAMR_sample_table_bam_stats <- left_join(GLAMR_sample_table_bam_stats, GLAMR_Seagull_Site_import, by = c("SampleID", "StudyID"))
 ##**********
 
@@ -541,11 +565,11 @@ MAG_map_plot2a <-
 plot(MAG_map_plot2a) 
 
 # Use ggsave to save the ggplot as a PDF
-#ggsave(plot = MAG_map_plot2a, filename = #"/geomicro/data2/pdenuyl2/neurotoxin_thesis/FINAL2/notebook_pdf/BLACKDASH_REDrpkm_fig_WEStations_Dec15_23_FINAL.pdf", #device = "pdf", width = 26, height = 12)
+#ggsave(plot = MAG_map_plot2a, filename = #"/geomicro/data2/pdenuyl2/neurotoxin_thesis/FINAL2/notebook_pdf/BLACKDASH_REDrpkm_fig_WEStations_Aug14_24_FINAL_IMPORTANT#UPDATE.pdf", device = "pdf", width = 26, height = 12)
 
 ```
 
-7.) Analysis for manuscript statements
+Analysis for manuscript statments
 ```{r}
  
 # Accessing the plotted dataframes:
@@ -802,9 +826,22 @@ View(df_sub_data_filt)
 
 df_sub_data_filt_TableS2 <- df_sub_data_filt %>%
                                   select(SampleName, mag, group, group_rpkm, mag_length, id_ref_mag_percent, mag_cover_percent, rpkm, lat, lon, NOAA_Site, collection_date, clustered_site, StudyID, year, month, day, yday, week, SampleID) %>%  #rearrange columns
-                                  rename("SampleID" = "SampleID_internal")
+                                  rename("SampleID" = "SampleID_internal") %>%
+                                    mutate(mag = case_when(
+                                           mag == "samp_471"  ~ "LE20-WE8",
+                                           mag == "samp_2073" ~ "LE17-WE2",
+                                           mag == "samp_3937" ~ "LE17-WE12",
+                                           mag == "samp_4344" ~ "LE20-WE12",
+                                           mag == "samp_507"  ~ "LE21-WE12",
+                                           mag == "samp_4380" ~ "LE22-WE12",
+                                           mag == "samp_4305" ~ "LE21-ER30",
+                                           mag == "samp_2059" ~ "LE16-WE8",
+                                           mag == "samp_468"  ~ "LE19-WE12",
+                                           mag == "samp_477"  ~ "LE20-WE2-Aug",
+                                           mag == "samp_481"  ~ "LE20-WE2-Sep",
+                                           TRUE ~ mag)) # retain original mag if not in the list
 
-write.csv(df_sub_data_filt_TableS2, file = "figs/TableS2.csv") 
+write.csv(df_sub_data_filt_TableS2, file = "figs/TableS2_August15_2024.csv") 
 
 ```
 

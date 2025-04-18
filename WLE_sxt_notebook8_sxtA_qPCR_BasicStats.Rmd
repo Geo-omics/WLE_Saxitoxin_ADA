@@ -19,6 +19,7 @@ library(Biostrings)
 library(lubridate)
 library(ggplot2)
 library(ggpmisc)
+library(ggpubr)
 knitr::opts_knit$set(root.dir = here::here("")) 
 
 ```
@@ -27,7 +28,8 @@ Import data
 ```{r, import qPCR and GLAMR data}
 
 #Import qPCR data from Casey/Rao
-CIGLR_qPCR_df <- read_csv("data/Joined_qPCR_and_Water_Quality_data.csv",na="NA",show_col_types = FALSE) %>%
+#previous versions used read_csv with show_col_types = FALSE #read.csv removed some errors, but if something werid comes up, check this.  
+CIGLR_qPCR_df <- read.csv("qPCR/Joined_qPCR_and_Water_Quality_data.csv",na="NA") %>%
                   mutate(Date = str_remove(Date, "T.*"),                   #take time off Date column
                          sxtA_Copies_Rxn = as.numeric(sxtA_Copies_Rxn),    #convert column to numeric 
                          date_site = paste0(Date, "_", Site))              #make new column to compare with GLAMR_sample_table 
@@ -37,7 +39,7 @@ CIGLR_qPCR_df <- read_csv("data/Joined_qPCR_and_Water_Quality_data.csv",na="NA",
 #Identify samples by set (i.e. project) of interest in GLAMR - Western Lake Erie only
 StudyID_to_use_WLE <- c("set_17", "set_18", "set_35", "set_36", "set_38", "set_40", "set_41", "set_42", "set_46", "set_51", "set_56")
 
-GLAMR_table_import <- read_xlsx("data/Great_Lakes_Omics_Datasets_Oct27_23.xlsx", sheet = "samples") #Import GLAMR metadata
+GLAMR_table_import <- read_xlsx("GLAMR_metadata/Great_Lakes_Omics_Datasets_Oct27_23.xlsx", sheet = "samples") #Import GLAMR metadata
 
 GLAMR_sample_table <- GLAMR_table_import %>% 
                               mutate(geo_loc_name = if_else(SampleID == "samp_4333", 
@@ -51,7 +53,7 @@ GLAMR_sample_table <- GLAMR_table_import %>%
                               !grepl("SB.*", NOAA_Site),                                                 #remove samples from Sag. Bay
                               SampleID != "samp_4304")                                                   #remove sample from Thames River
 
-GLAMR_sample_table %>% distinct(SampleID) %>% count #570 WLE metagenome samples in GLAMR - October 27, 2023
+GLAMR_sample_table %>% distinct(SampleID) %>% dplyr::count() #570 WLE metagenome samples in GLAMR - October 27, 2023
 #End notebook1b code
 
 ```
@@ -68,11 +70,11 @@ GLAMR_sample_table_slim <- GLAMR_sample_table %>%
 #Add same date_site column to CIGLR_qPCR_df 
 CIGLR_qPCR_df_slim <- CIGLR_qPCR_df %>%
                       filter(!is.na(sxtA_Rep)) %>%                                             #remove samples without sxtA run (rep)
-                      rename("Sample_ID" = "SampleID_qPCR",                                    #rename to better distinguish from GLAMR Date
-                             "Latitude_decimal_deg" = "Latitude_decimal_deg_qPCR",
-                             "Longitude_decimal_deg" = "Longitude_decimal_deg_qPCR",
-                             "Date" = "Date_qPCR",
-                             "Site" = "Site_qPCR") %>%                                
+                      rename("SampleID_qPCR" = "Sample_ID",                                    #rename to better distinguish from GLAMR Date
+                             "Latitude_decimal_deg_qPCR" = "Latitude_decimal_deg",
+                             "Longitude_decimal_deg_qPCR" = "Longitude_decimal_deg",
+                             "Date_qPCR" = "Date",
+                             "Site_qPCR" = "Site") %>%                                
                       dplyr::select(SampleID_qPCR, Latitude_decimal_deg_qPCR, Longitude_decimal_deg_qPCR, Date_qPCR, Site_qPCR, sxtA_Rep, sxtA_Copies_Rxn, sxtA_Copies_mL, sxtA_Copies_mL_BDL_Replaced, date_site)                       #select relevant columns
 
 #Merge CIGLR_qPCR and GLAMR samples that share the same date and site (comparable samples)
@@ -336,7 +338,7 @@ runDetect_qPCR_metagenome <- CIGLR_qPCR_GLAMR_merge_v4 %>%
 #differences: qPCR & sxtA mapping (>60%)
 #detect in metagenomes, but not qPCR
 runDetect_metagenomeOnly <- CIGLR_qPCR_GLAMR_merge_v4 %>% 
-                                filter(is.na(sxtA_Copies_Rxn) | sxtA_Copies_Rxn < 45) %>%       #Keep samples below qPCR detection-limit
+                                filter(is.na(sxtA_Copies_Rxn) | sxtA_Copies_Rxn < 45) %>%       #cKeep samples below qPCR detection-limit
                                 filter(SampleID %in% GLAMR_bam_stats_60_sxtA_cov_mm2$sample_id) #Keep samples with sxtA hits >60% cover
                                                                                                 #1 sample with hits in metagenome and NOT qPCR
 
@@ -377,4 +379,160 @@ runDetect_Neither_All <- CIGLR_qPCR_GLAMR_merge_v4 %>%
 ```
 
 
+```{r - mapping}
+###########################
+#Add sxtA mapping results to GLAMR data frame
+###########################
+
+GLAMR_sample_table_sxtAMAP <- GLAMR_sample_table
+
+###########################
+#Slim down GLAMR data frame
+GLAMR_sample_table_slim <- GLAMR_sample_table_sxtAMAP %>%
+                            dplyr::select(SampleID, lat, lon, collection_date, NOAA_Site) %>%  #select relevant columns
+                            mutate(collection_date = str_remove(collection_date, "T.*"),       #take time off collection_date column
+                                   date_site = paste0(collection_date, "_", NOAA_Site))        #make new column to compare with CIGLR_qPCR_df
+
+#Add same date_site column to CIGLR_qPCR_df
+CIGLR_qPCR_df_add <- CIGLR_qPCR_df %>%
+                      filter(!is.na(sxtA_Rep)) %>%                                             #remove samples without sxtA run (rep)
+                      rename("Sample_ID" = "SampleID_qPCR",                                    #rename to better distinguish from GLAMR Date
+                             "Latitude_decimal_deg" = "Latitude_decimal_deg_qPCR",
+                             "Longitude_decimal_deg" = "Longitude_decimal_deg_qPCR",
+                             "Date" = "Date_qPCR",
+                             "Site" = "Site_qPCR") %>%                                
+                      dplyr::select(SampleID_qPCR, Latitude_decimal_deg_qPCR, Longitude_decimal_deg_qPCR, Date_qPCR, Site_qPCR, sxtA_Rep, sxtA_Copies_Rxn, sxtA_Copies_mL, sxtA_Copies_mL_BDL_Replaced) %>%                                              #select relevant columns
+                      mutate(date_site = paste0(Date_qPCR, "_", Site_qPCR))                    #make new column to compare with GLAMR_sample_table
+
+#Merge CIGLR_qPCR and GLAMR samples that share the same date and site
+CIGLR_qPCR_GLAMR_merge_v1 <- left_join(CIGLR_qPCR_df_add, GLAMR_sample_table_slim)
+#Looks good, let's sort and cleanup
+
+CIGLR_qPCR_GLAMR_merge_v1
+
+CIGLR_qPCR_GLAMR_merge_v2 <- CIGLR_qPCR_GLAMR_merge_v1 %>%
+                              filter(!is.na(SampleID)) %>%                                     #remove samples without metagenomic data
+                              mutate(same_date <- collection_date == Date_qPCR,
+                                     lat <- as.numeric(lat),
+                                     lon <- as.numeric(lon),
+                                     close_lat <- lat - Latitude_decimal_deg_qPCR < 0.01,
+                                     close_lon <- lon - Longitude_decimal_deg_qPCR < 0.01, 
+                                     same_site <- NOAA_Site == Site_qPCR) %>%
+                              dplyr::select(SampleID, date_site, collection_date, same_date, Date_qPCR, lat, Latitude_decimal_deg_qPCR, close_lat, lon, Longitude_decimal_deg_qPCR, close_lon, NOAA_Site, Site_qPCR, same_site, sxtA_Copies_Rxn, sxtA_Copies_mL, sxtA_Copies_mL_BDL_Replaced)
+
+CIGLR_qPCR_GLAMR_merge_v2 %>%
+  filter(same_date == FALSE |
+         close_lat == FALSE |
+         close_lon == FALSE |
+         same_site == FALSE)
+
+#clean up v2 some more
+CIGLR_qPCR_GLAMR_merge_v3 <- CIGLR_qPCR_GLAMR_merge_v2 %>%
+                              mutate(lat <- if_else(is.na(lat), Latitude_decimal_deg_qPCR, lat)) %>%
+                              dplyr::select(SampleID, date_site, lat, lon, sxtA_Copies_Rxn, sxtA_Copies_mL, sxtA_Copies_mL_BDL_Replaced) #%>%
+                              #arrange(desc(sxtA_Copies_Rxn)) %>%              #Arrange by sxtA_Copies_Rxn to determine if sample has >BDL
+                              #distinct(date_site, .keep_all = TRUE)           #Keep only one unique date_site
+
+```
+
+August 27, improvement to bar graph
+```{r}
+
+p_violin <- ggplot(data = CIGLR_qPCR_df, 
+                   aes(y = Site, x = sxtA_Copies_mL_BDL_Replaced, fill = Site)) + 
+  geom_violin(alpha = 0.8, scale = "width") +
+  geom_jitter(height = 0.3, size = 1, alpha = 0.6, fill = "black",
+              aes(shape = factor(case_when(
+                is.na(sxtA_Copies_Rxn) ~ 1,  # Shape 1 for NA values
+                sxtA_Copies_Rxn >= 100 ~ 21,  # Shape 21 for values >= 45
+                sxtA_Copies_Rxn < 100 & sxtA_Copies_Rxn >=45 ~ 0,
+                TRUE ~ 1  # Default to shape 1 for values < 45
+              )))) +  # Conditionally change shape
+  scale_x_continuous(trans = modulus_trans(0.2), breaks = c(0, 100, 500, 1000, 2500, 5000, 10000)) +  # Apply custom transformation
+  scale_y_discrete(limits = c("WE9", "WE4", "WE6", "WE2", "WE8", "WE12")) + 
+  scale_fill_manual(values = c('WE9' = '#FFA6E9', 
+                                'WE4' = '#FCF485', 
+                                'WE6' = '#FCECCE', 
+                                'WE8' = '#5F8594', 
+                                'WE2' = '#92DCE5', 
+                                'WE12' = '#2B2D42')) +
+  scale_shape_manual(values = c('1' = 1, '21' = 21, '0' = 0)) +  # Define shapes
+  labs(y = "NOAA Station", x = "Gene Copies per mL", 
+       title = "sxtA qPCR Results By Station") +
+  theme_minimal() +
+  theme(legend.position = "none",
+        axis.text.x = element_text(size = 6),  # Adjust x-axis label size
+        strip.text = element_text(size = 12, face = "bold"),
+        panel.grid.minor.x = element_blank())  # Remove minor grid lines
+
+# Print the plot
+print(p_violin)
+
+ggsave("qPCR/violin_plots.pdf", p_violin, width = 4, height = 3)
+
+```
+
+Revision 2 addition - implementation of cyanobacterial community composition compared with qPCR sxtA potential
+```{r}
+
+#Use table pairing qPCR and metagenome samples
+CIGLR_qPCR_GLAMR_merge_v4 #117 samples with qPCR and metagenome data
+
+#Import Bracken data
+#Collect all MPA outputs from samples in CIGLR_qPCR_GLAMR_merge_v4
+##write.csv(CIGLR_qPCR_GLAMR_merge_v4, file = "EST_revisions/data/CIGLR_qPCR_GLAMR_merge_v4.csv")
+
+#Gather all read paths to megahit assemblies to process through BLASTN, sym link to new path
+bracken_mpa_paths <- system("ls /geomicro/data2/kiledal/GLAMR/data/omics/metagenomes/*/kraken_fastp/gtdb*brackenMpa.txt",intern = TRUE) %>% 
+  tibble(mpa_path = .) %>% mutate(sample = mpa_path %>% str_remove(".*metagenomes/") %>% str_remove("/kraken_fastp.*"),
+                                  brack_id = mpa_path %>% str_remove(".*kraken_fastp/gtdb_") %>% str_remove("_brackenMpa.txt"),
+         new_path = str_glue("EST_revisions/bracken/{sample}_gtdb_{brack_id}_brackenMpa.txt")) %>% 
+         filter(sample %in% CIGLR_qPCR_GLAMR_merge_v4$SampleID)
+
+#symbolic link read_paths
+##file.symlink(bracken_mpa_paths$mpa_path, bracken_mpa_paths$new_path)
+#^^^Done on February 13 - - - Only a small subset available
+
+#Read/merge TSV files
+mpa_files <- system("ls /geomicro/data2/pdenuyl2/neurotoxin_thesis/FINAL2/EST_revisions/bracken/*brackenMpa.txt", intern = TRUE)
+
+# Read and combine all TSV files into one data frame
+merged_mpa_data <- mpa_files %>%
+  map_dfr(~ {
+              #Read the TSV file
+              data <- read_tsv(.x, col_names = FALSE)
+    
+              #Extract the sample ID from the file name
+              sample_id <- tools::file_path_sans_ext(basename(.x))
+                                                     
+              #Add the sample ID column
+              data <- data %>%
+              mutate(sample_id = sample_id %>% str_remove("_gtdb.*"))
+    return(data)
+  })  # Reads each file and merges into one
+
+# Keep only genus-level observations (genus is the last level)
+merged_mpa_data_filt <- merged_mpa_data %>%
+  rename(taxonomy = X1,
+         abundance = X2) %>%
+  filter(grepl("\\|g__[^|]+$", taxonomy) | grepl("^g__", taxonomy)) %>%  # Keep only genus-level classifications
+  filter(grepl("p__p__Cyanobacteria", taxonomy)) %>% # Keep only Cyanobacteria genera
+  mutate(family = str_remove(taxonomy, ".*\\|f__f__"), 
+         family = str_remove(family, "\\|g__.*"),
+         genus = taxonomy %>% str_remove(".*g__g__"),
+         family_genus = paste0("f__", family, "|", "g__", genus))
+
+#Create groups, assign unique number - remove groups with
+merged_mpa_data_filt_group <- merged_mpa_data_filt %>%
+                                mutate(genus_id = dense_rank(genus)) %>%
+                                dplyr::group_by(genus_id) %>%
+                                filter(any(abundance > 1)) %>%  # Keep only groups where at least one abundance value is > 1
+                                dplyr::group_by(sample_id) %>%
+                                mutate(cyano_abund = sum(abundance)) %>%
+                                ungroup()  # Ungroup to return to a regular data frame
+
+#Join qPCR data and merged_mpa_data_filt_group
+merged_mpa_data_filt_group_qPCR <- left_join(merged_mpa_data_filt_group, CIGLR_qPCR_GLAMR_merge_v4, by = c("sample_id" = "SampleID"))
+
+```
 

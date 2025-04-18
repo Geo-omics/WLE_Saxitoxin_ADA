@@ -25,8 +25,10 @@ knitr::opts_knit$set(root.dir = here::here(""))
 ```
 
 ---Outline---
-1.) Map all WLE GLAMR sample raw reads to examine presence of sxtWVX - snakemake
-2.) Run WLE GLAMR sample mapping for sxtWVX
+1.) Create symbolic links for all WLE GLAMR samples for mapping of sxt operon (from notebook 3b)
+2.) Map all WLE GLAMR sample raw reads to examine presence of sxt operon - snakemake
+
+6.) Analyze WLE GLAMR sample mapping results 
 7.) Plot percent coverage and mean coverage depth to confirm analysis parameters
 8.) Plot mapped sxt samples - coverage and % id for contigs & all sequences
 -------------
@@ -36,15 +38,14 @@ Note: database: /geomicro/data2/pdenuyl2/neurotoxin_thesis/FINAL2/mapping/reads/
 is the exact file here: /Users/pdenuyl/Documents/CIGLR_bioinformatics/2024/Sxt_thesis_to_manuscript/Figures_April2024/figureS2_3_allsxtWVX/LE20_Coassembly12_sxtWVX.fa
 #Database GLAMRsxtWVX.fa created by trimming ends off contigs (or simply extracting section) to remove non-sxtWVX genes. Done within Geneious.
 
-1.)
 ```{r}
 
-conda config --set channel_priority strict
-snakemake run_read_mapping_GLAMRraw_sxtWVX_mm2 --profile config/snakemake_profiles/cayman/ 
+###conda config --set channel_priority strict
+###snakemake run_read_mapping_GLAMRraw_sxtWVX_mm2 --profile config/snakemake_profiles/cayman/ --dry-run 
 
 ```
 
-2.) Determine sxtWVX % id and coverage - minimap2 - from code updated Oct. 25, 2023
+6.) Determine contig and operon (subset) % id and coverage - minimap2 - from code updated Oct. 25, 2023
 ```{r}
 
 # reference sequence import
@@ -215,7 +216,6 @@ create_pileups_plot <- function(data, title) {
     labs(title = title) +
     xlab("Position (bp)")
 }
-
 
 # List of data frames and corresponding titles
 data_frames <- list(Seq1266072)
