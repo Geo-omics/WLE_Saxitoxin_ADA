@@ -6,6 +6,9 @@
 - R Markdown files direct the workflow and are divided by topic/approach
 - Snakemake file is directly called through R Markdown code
 
+### Data Availability:
+Raw sequence files associated with this study can be accessed at the National Center for Biotechnology Information (NCBI) Sequence Read Archive (SRA) under BioProjects PRJNA1190886 (accession numbers SRR31514638 - SRR31514807) and PRJNA1191405 (accession numbers SRR31534945 - SRR31535021). Metagenome-assembled genomes (MAGs) from these Bioprojects are listed under accession numbers SAMN45874233 - SAMN45875077 and SAMN45872214 - SAMN45872681. Metadata, summary statistics, and sequence data are available for WLE MAGs, dereplicated at 99% ANI within each individual sample, though Zenodo (10.5281/zenodo.14803595). Environmental and sample metadata are accessible at the National Centers for Environmental Information (NCEI): 10.25921/11da-3x54.
+
 ### Notebooks:
 
 **WLE_sxt_notebook1_FindMAGs.Rmd**
