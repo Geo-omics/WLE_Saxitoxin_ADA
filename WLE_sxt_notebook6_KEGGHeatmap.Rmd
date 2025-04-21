@@ -230,8 +230,6 @@ heatmap <- kegg_decoder_long %>% ggplot(aes(reorder(MAG_names, bin_num),reorder(
   labs(x = NULL, 
        y= NULL,
        fill = "Completeness") +
-  #theme_void() +
-  #cowplot::theme_nothing() +
   theme(axis.text.x = element_text(angle = 45, hjust = 1),
         axis.text.y = element_blank(),
         axis.ticks.y = element_blank()) #+
