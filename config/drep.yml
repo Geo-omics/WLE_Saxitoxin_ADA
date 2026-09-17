@@ -1,0 +1,8 @@
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - drep=3.5.0
+  - HMMER=3.4.0
+  - checkm-genome==1.0.7
